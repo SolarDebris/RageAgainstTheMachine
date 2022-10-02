@@ -1,2 +1,2 @@
 # RageAgainstTheMachine
-Autoexploit Generator for ARM and MIPSEL binaries. 
+Autoexploit Generator using the angr framework.
