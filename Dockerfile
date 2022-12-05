@@ -7,9 +7,6 @@ ENV TZ=America/New_York
 ENV LANG en_US.UTF-8
 
 # apt-get installs
-
-RUN add-apt-repository ppa:acooks/libwebsockets6
-
 RUN apt-get update -y -qq
 RUN apt-get install -y -qq \
     g++ \
@@ -18,7 +15,6 @@ RUN apt-get install -y -qq \
     gdb \
     gdb-multiarch \
     git \
-    libuv1.dev \ 
     locales \
     make \
     man \
@@ -28,7 +24,8 @@ RUN apt-get install -y -qq \
     tmux \
     wget \
     python3-pip \
-    ruby-dev 
+    ruby-dev \
+    radare2
 
 RUN pip3 install --upgrade pip
 
@@ -46,7 +43,9 @@ RUN python3 -m pip install --no-cache-dir \
     ropper \
     sudo \
     unicorn \
-    z3-solver 
+    z3-solver \
+
+
 
 # install angr after dependencies met
 RUN pip3 install angr angrop
@@ -102,3 +101,6 @@ RUN ulimit -c unlimited
 COPY /flag/flag.txt /flag.txt
 RUN mkdir /solution
 COPY execute_test/execute_test.py /execute_test.py 
+
+# copy over solarpanth3r; remove from standard build
+# COPY solution/* /aeg.py 
