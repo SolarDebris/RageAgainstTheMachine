@@ -7,6 +7,9 @@ ENV TZ=America/New_York
 ENV LANG en_US.UTF-8
 
 # apt-get installs
+
+RUN add-apt-repository ppa:acooks/libwebsockets6
+
 RUN apt-get update -y -qq
 RUN apt-get install -y -qq \
     g++ \
@@ -15,6 +18,7 @@ RUN apt-get install -y -qq \
     gdb \
     gdb-multiarch \
     git \
+    libuv1.dev \ 
     locales \
     make \
     man \
