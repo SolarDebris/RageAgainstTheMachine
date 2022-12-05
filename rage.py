@@ -423,6 +423,7 @@ class Raeg:
 
         f = open("./format.txt", "w+")
         f.write(self.libc_offset_string + "\n")
+        f.close()
 
 
 
