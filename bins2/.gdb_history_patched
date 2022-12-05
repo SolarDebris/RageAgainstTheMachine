@@ -1,0 +1,51 @@
+i functions 
+q
+i functions 
+q
+i functions 
+disass vuln 
+r
+r
+q
+q
+i f
+i functions 
+disass vuln
+x/s 0x40084d
+b *0x0000000000400761
+r
+stack 50
+n
+n
+n
+x/5i 0x7ffff7fdffe8
+q
+b *printf
+r
+q
+disass vuln
+b *0x0000000000400748
+b *0x0000000000400761
+b *0x0000000000400772
+r
+n
+n
+n
+n
+c
+q
+i functions 
+disass main
+disass vuln
+disass vuln
+q
+b *main
+r
+vmmap
+set logging file ./pwndbg.log
+set logging on
+b main
+r 
+vmmap
+r
+c
