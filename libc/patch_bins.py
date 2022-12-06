@@ -14,9 +14,9 @@ else:
 if args.BIN_DIR:
    BIN_DIR = args.BIN_DIR
 else:
-   BIN_DIR = '/home/solardebris/development/RageAgainstTheMachine/bins/'
+   #BIN_DIR = '/home/solardebris/development/RageAgainstTheMachine/bins/'
+   BIN_DIR="/bins/"
 
-print(os.listdir(BIN_DIR))
 for bin in os.listdir(BIN_DIR):
     filename = "%s%s" %(BIN_DIR,bin)
     log.info("Patching %s" %filename)
