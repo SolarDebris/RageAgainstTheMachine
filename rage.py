@@ -276,31 +276,9 @@ class rAEG:
 
     # Dynamically get the offset
     def core_smash(self):
-        p = process(self.binary)
-        p.sendline(cyclic(1000,n=8))
-                #p.wait()
-        try:
-            core = p.corefile
-        except:
-            p.close()
-            p.kill()
 
-            if core != None:
-                os.remove(core.file.name)
 
-            print(f'End of stack data is {core.stack.data[-1:]}')
-            if(core.stack.data[-8:] != b'\x00'*8):
-                log.info(f"RAGE SMASHING ERROR; Retrying")
-                self.core_smash()
-            padding = cyclic_find(core.read(core.rsp, 8),n=8)
-            while padding == -0x1:
-                padding = cyclic_find(core.read(core.rbp, 8),n=8)
-                if padding == -0x1:
-                    continue
-                else:
-                    padding += 8
-            log.info('padding: ' + hex(padding))
-            self.padding = padding
+        self.padding = None
 
 
     def find_goal(self, function_name):
