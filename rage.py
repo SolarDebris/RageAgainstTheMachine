@@ -11,6 +11,7 @@ from binascii import *
 
 # Disable angr logging and pwntools until we need it 
 logging.getLogger("angr").setLevel(logging.CRITICAL)
+#logging.getLogger("angr").setLevel(logging.DEBUG)
 logging.getLogger("os").setLevel(logging.CRITICAL)
 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
@@ -85,7 +86,9 @@ class Raeg:
     # Also determine the parameters needed, and the function to execute
     def find_vulnerability(self):
 
-        self.core_smash()
+        #self.core_smash()
+
+
         self.angry_analyze()
 
         if self.has_leak:
@@ -99,8 +102,7 @@ class Raeg:
                 self.format_write(1337, self.elf.sym['pwnme'])
             elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
                 logger.info("Found a win function with a format got overwrite")
-                print(self.unfilled_got(self.elf.sym["win"], self.last_printf_address))
-                self.find_arguments("win")
+                #print(self.unfilled_got(self.elf.sym["win"], self.last_printf_address))
 
                 self.exploit_function = "win"
                 for i in self.elf.got.keys():
@@ -205,7 +207,7 @@ class Raeg:
                 stdin=self.symbolic_input,
                 add_options = angr.options.unicorn
         )
-        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
+        self.simgr = self.proj.factory.simgr(self.state)#, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
         self.simgr.stashes["format_strings"] = []
 
@@ -223,15 +225,26 @@ class Raeg:
             varg = state.solver.eval(state.regs.rsi)
             address = state.solver.eval(state.regs.rip)
 
+            return_target = state.callstack.current_return_target
+
+            print(return_target)
 
             # If rdi is a stack or libc address
             if string >= 0xffffffffff:
                 self.has_leak = True
-            if varg <= 0xff:
-                self.last_printf_address = state.callstack.current_return_target
-                print(self.last_printf_address)
 
+        def analyze_input(state):
+            size = state.solver.eval(state.regs.rsi)
+            if size >= 1000:
+                self.simgr.drop(stash = "active")
 
+        def debug_read(state):
+            print(f"mem_read at {state}")
+            print(f"Mem read length {state.inspect.mem_read_expr}")
+
+        #self.state.inspect.b("mem_read", when=angr.BP_AFTER, action=debug_read)
+
+        self.proj.hook_symbol("fgets", analyze_input)
         self.proj.hook_symbol("printf", analyze_printf)
 
         logger.info("Symbolicly analyzing the binary")
