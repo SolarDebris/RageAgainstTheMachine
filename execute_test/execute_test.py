@@ -3,7 +3,7 @@ import colorama
 from colorama import Fore, Style
 from pwn import *
 
-SOLUTION = '/solution/aeg.py'
+SOLUTION = 'solution/rage.py'
 
 if args.BIN_DIR:
    BIN_DIR=args.BIN_DIR
@@ -13,7 +13,7 @@ else:
 for bin in os.listdir(BIN_DIR):
    filename = "%s%s" %(BIN_DIR,bin)
    if os.access(filename, os.X_OK):
-        cmd = "python3 %s BIN=%s" %(SOLUTION,filename)
+        cmd = "python3 %s %s" %(SOLUTION,filename)
         print(Fore.RED+"\n========================================================================================")
         print(Fore.GREEN+cmd)
         print(Fore.RED+"========================================================================================")
