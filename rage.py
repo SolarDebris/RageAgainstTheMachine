@@ -101,7 +101,7 @@ class Raeg:
                 self.exploit_function = "pwnme"
                 ret = self.format_write(1337, self.elf.sym['pwnme'])
                 if ret == 1:
-                    break
+                    None
                 else:
                     for i in self.elf.got.keys():
                         try:
