@@ -236,7 +236,7 @@ class Raeg:
 
             return_target = state.callstack.current_return_target
 
-            print(return_target)
+            #print(return_target)
 
             # If rdi is a stack or libc address
             if string >= 0xffffffffff:
@@ -266,7 +266,7 @@ class Raeg:
 
         for e in self.simgr.errored:
             logger.warning(f"Simulation errored with {error}")
-            print(e.error)
+            #print(e.error)
             if e.error == "Symbolic (format) string, game over :(":
                 logger.info("Found symbolic format string vulnerability")
                 self.has_leak = True
@@ -714,7 +714,7 @@ class Raeg:
         p.sendline(b'cat flag.txt')
         #Tries to recv all until timeout
         try:
-            data = p.recvall(timeout=15)
+            data = p.recvall(timeout=8)
             if 'flag' in data.decode():
                 self.flag = "flag{" + data.decode().replace(" ", "").replace("\n", "").split("{")[1].split("}")[0] + "}"
                 p.close()
