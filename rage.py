@@ -112,7 +112,6 @@ class Raeg:
                             ret = 0
             elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
                 logger.info("Found a win function with a format got overwrite")
-                #print(self.unfilled_got(self.elf.sym["win"], self.last_printf_address))
 
                 self.exploit_function = "win"
                 for i in self.elf.got.keys():
@@ -306,19 +305,6 @@ class Raeg:
             log.info('padding: ' + hex(padding))
             self.padding = padding
 
-    def unfilled_got(self, function_addr, addr):
-        got_table = []
-
-        function = self.fun_mgr[function_addr]
-
-        calls = function.get_call_sites()
-
-        for call in calls:
-            print(hex(call))
-            if call >= addr:
-                print(self.fun_mgr[addr])
-
-        return got_table
 
     def find_goal(self, function_name):
 
