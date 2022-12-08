@@ -858,6 +858,7 @@ class rAEG:
             print(self.flag)
             return
 
+
         if self.rop_chain != None:
             if self.symbolic_padding != None:
                 if len(self.symbolic_padding) == self.padding:
@@ -928,10 +929,8 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     rage = rAEG(args.BIN, "/opt/libc.so.6")
 
-    for i in range(3):
-        if rage.flag != None:
-            break
-        rage.find_vulnerability()
-        rage.exploit()
-
-
+    #for i in range(3):
+        #if rage.flag != None:
+            #break
+    rage.find_vulnerability()
+    rage.exploit()
